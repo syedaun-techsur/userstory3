@@ -43,7 +43,7 @@ def get_pr_by_number(repo_name: str, pr_number: int):
         "user": pr.user.login
     }
 
-def collect_files_for_refinement(repo_name: str, pr_number: int, target_file: Optional[str] = None) -> Dict[str, str]:
+def collect_files_for_refinement(repo_name: str, pr_number: int, target_file: Optional[str] = None, pr_info=None) -> Dict[str, str]:
     """
     Collect all files in the PR for refinement (ignore target_file and ai-refine comments).
     """
@@ -57,6 +57,14 @@ def collect_files_for_refinement(repo_name: str, pr_number: int, target_file: Op
     pr_files = pr.get_files()
     print(f"[DEBUG] Got {len(list(pr_files))} PR files")
     for file in pr_files:
+        # Skip lock files in any directory
+        if file.filename.endswith("package-lock.json") or file.filename.endswith("package.lock.json"):
+            print(f"[DEBUG] Skipping lock file: {file.filename}")
+            continue
+        # Skip GitHub workflow and config files
+        if file.filename.startswith('.github/'):
+            print(f"[DEBUG] Skipping GitHub workflow or config file: {file.filename}")
+            continue
         file_names.add(file.filename)
 
     print(f"[DEBUG] File names to process: {file_names}")
@@ -64,7 +72,7 @@ def collect_files_for_refinement(repo_name: str, pr_number: int, target_file: Op
     for file_name in file_names:
         try:
             print(f"[DEBUG] Getting content for {file_name}...")
-            content = repo.get_contents(file_name, ref=pr_info.get("pr_branch", "main"))
+            content = repo.get_contents(file_name, ref=pr_info.get("pr_branch", "main") if pr_info else "main")
             # Handle both single file and list of files
             if isinstance(content, list):
                 content = content[0]  # Take the first file if it's a list
@@ -77,7 +85,7 @@ def collect_files_for_refinement(repo_name: str, pr_number: int, target_file: Op
     print(f"[DEBUG] Returning {len(result)} files")
     return result
 
-def fetch_repo_context(repo_name: str, pr_number: int, target_file: str) -> str:
+def fetch_repo_context(repo_name: str, pr_number: int, target_file: str, pr_info=None) -> str:
     repo = gh.get_repo(repo_name)
     pr = repo.get_pull(pr_number)
     context = ""
@@ -89,8 +97,16 @@ def fetch_repo_context(repo_name: str, pr_number: int, target_file: str) -> str:
     for file in pr_files:
         if file.filename == target_file:
             continue
+        # Skip lock files in any directory
+        if file.filename.endswith("package-lock.json") or file.filename.endswith("package.lock.json"):
+            print(f"[DEBUG] Skipping lock file in context: {file.filename}")
+            continue
+        # Skip GitHub workflow and config files
+        if file.filename.startswith('.github/'):
+            print(f"[DEBUG] Skipping GitHub workflow or config file in context: {file.filename}")
+            continue
         try:
-            content = repo.get_contents(file.filename, ref=pr_info.get("pr_branch", "main"))
+            content = repo.get_contents(file.filename, ref=pr_info.get("pr_branch", "main") if pr_info else "main")
             # Handle both single file and list of files
             if isinstance(content, list):
                 content = content[0]  # Take the first file if it's a list
@@ -168,7 +184,7 @@ def compose_prompt(requirements: str, code: str, file_name: str, context: str) -
         f"    - In the ### Updated Code section, return the original code unchanged.\n"
     )
 
-async def regenerate_code_with_mcp(files: Dict[str, str], requirements: str, pr) -> Dict[str, Dict[str, str]]:
+async def regenerate_code_with_mcp(files: Dict[str, str], requirements: str, pr, pr_info=None) -> Dict[str, Dict[str, str]]:
     regenerated = {}
     server_params = StdioServerParameters(command="python", args=["server.py"])
 
@@ -180,7 +196,9 @@ async def regenerate_code_with_mcp(files: Dict[str, str], requirements: str, pr)
                 for file_name, old_code in files.items():
                     try:
                         print(f"[Step3] Processing file: {file_name}")
-                        context = fetch_repo_context(REPO_NAME, PR_NUMBER, file_name)
+                        repo_name = pr_info["repo_name"] if pr_info else pr["repo_name"]
+                        pr_number = pr_info["pr_number"] if pr_info else pr["number"]
+                        context = fetch_repo_context(repo_name, pr_number, file_name, pr_info)
                         prompt = compose_prompt(requirements, old_code, file_name, context)
                         
                         print(f"[Step3] Calling AI for {file_name}...")
@@ -217,7 +235,7 @@ async def regenerate_code_with_mcp(files: Dict[str, str], requirements: str, pr)
                             print(f"[Step3] Warning: No content in response for {file_name}")
                             response = ""
                         
-                        print(f"\nRaw LLM response for {file_name}:\n{'-'*80}\n{response}\n{'-'*80}")
+                        # print(f"\nRaw LLM response for {file_name}:\n{'-'*80}\n{response}\n{'-'*80}")
 
                         # Extract changes - look for changes both inside and outside <think> block
                         changes = ""
@@ -348,12 +366,17 @@ async def regenerate_code_with_mcp(files: Dict[str, str], requirements: str, pr)
 
     return regenerated
 
-if __name__ == "__main__":
+def regenerate_files(pr_info):
+    REPO_NAME = pr_info["repo_name"]
+    AI_REFINE_TAG = pr_info["ai_refine_tag"]
+    PR_NUMBER = pr_info["pr_number"]
+    TARGET_FILE = pr_info.get("target_file")
+    
     pr = get_pr_by_number(REPO_NAME, PR_NUMBER)
     if "error" in pr:
         print(f"Error loading PR #{PR_NUMBER}: {pr['error']}")
-        exit(1)
-        
+        return None
+    
     print(f"Loaded PR #{pr['number']}: {pr['title']}")
     print(f"Branch: {pr['head']['ref']}")
     
@@ -362,21 +385,15 @@ if __name__ == "__main__":
     else:
         print("Processing all files with ai-refine comments")
 
-    files_for_update = collect_files_for_refinement(REPO_NAME, PR_NUMBER, TARGET_FILE)
+    files_for_update = collect_files_for_refinement(REPO_NAME, PR_NUMBER, TARGET_FILE, pr_info)
     print(f"Files selected for refinement: {list(files_for_update.keys())}")
 
     if not files_for_update:
         print("No files found for refinement. Exiting.")
-        exit(1)
+        return None
 
     requirements_text = fetch_requirements_from_readme(REPO_NAME, pr['head']['ref'])
     print(f"Requirements from README.md:\n{'-'*60}\n{requirements_text}\n{'-'*60}")
 
-    regenerated_files = asyncio.run(regenerate_code_with_mcp(files_for_update, requirements_text, pr))
-
-    # Save results
-    output_path = "json_output/regenerated_results.json"
-    with open(output_path, "w") as f:
-        json.dump(regenerated_files, f, indent=2)
-
-    print(f"\nSaved regenerated output to {output_path}")
+    regenerated_files = asyncio.run(regenerate_code_with_mcp(files_for_update, requirements_text, pr, pr_info))
+    return regenerated_files

@@ -21,12 +21,10 @@ REPO_NAME = pr_info["repo_name"]
 PR_NUMBER = pr_info["pr_number"]
 UPDATED_FILES_JSON = "json_output/regenerated_results.json"
 
-def push_updates_to_existing_pr():
+def commit_regenerated_files(pr_info, regenerated_files):
+    REPO_NAME = pr_info["repo_name"]
+    PR_NUMBER = pr_info["pr_number"]
     github_client = create_github_client()
-
-    # Load regenerated code and changes from JSON
-    with open(UPDATED_FILES_JSON, "r") as f:
-        updated_files = json.load(f)
 
     # Get the PR to determine the base branch
     pr = github_client.get_pr_by_number(REPO_NAME, PR_NUMBER)
@@ -58,7 +56,7 @@ def push_updates_to_existing_pr():
         print(f"Created branch: {TARGET_BRANCH}")
 
     # Iterate and push updates
-    for fname, data in updated_files.items():
+    for fname, data in regenerated_files.items():
         changes = data.get('changes', '').strip()
         old_code = data.get('old_code', '')
         updated_code = data.get('updated_code', '')
@@ -101,7 +99,9 @@ def push_updates_to_existing_pr():
                     branch=TARGET_BRANCH
                 )
             
-            if "error" in result:
+            if result is None:
+                print(f"Error updating {fname}: No response from GitHub API")
+            elif "error" in result:
                 print(f"Error updating {fname}: {result['error']}")
             else:
                 print(f"Successfully updated {fname}")
@@ -141,7 +141,3 @@ def push_updates_to_existing_pr():
             
     except Exception as e:
         print(f"Error checking/creating PR: {e}")
-
-
-if __name__ == "__main__":
-    push_updates_to_existing_pr()

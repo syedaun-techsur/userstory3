@@ -7,6 +7,8 @@ from dotenv import load_dotenv
 from datetime import datetime
 from audit_logger import AuditLogger
 from github_mcp_client import create_github_client
+from step3_regenerate import regenerate_files
+from step4_commit import commit_regenerated_files
 
 load_dotenv()
 
@@ -162,47 +164,27 @@ class PRWatcher:
             "main_branch": pr_base_ref
         }
         
-        # Save PR info for step3
-        with open("json_output/step2_output.json", "w") as f:
-            json.dump(pr_info, f, indent=2)
-        
-        print(f"[Watcher] Saved PR info for {file_name} in PR #{pr_number}")
-        
-        # Run step3_regenerate.py
-        print(f"[Watcher] Running step3_regenerate.py for {file_name}...")
-        result = subprocess.run(["python", "step3_regenerate.py"], capture_output=True, text=True)
-        
-        if result.returncode != 0:
-            print(f"[Watcher] Error in step3: {result.stderr}")
+        print(f"[Watcher] Running step3_regenerate for {file_name}...")
+        regenerated_files = regenerate_files(pr_info)
+        if regenerated_files is None:
+            print(f"[Watcher] Error in step3 for {file_name}")
             return False
-        
         print(f"[Watcher] Completed step3 for {file_name}")
         
-        # Run step4_commit.py
-        print(f"[Watcher] Running step4_commit.py for {file_name}...")
-        result = subprocess.run(["python", "step4_commit.py"], capture_output=True, text=True)
-        
-        if result.returncode != 0:
-            print(f"[Watcher] Error in step4: {result.stderr}")
-            return False
-        
+        print(f"[Watcher] Running step4_commit for {file_name}...")
+        commit_regenerated_files(pr_info, regenerated_files)
         print(f"[Watcher] Completed step4 for {file_name}")
         
         # Log the feedback cycle for audit
-        self.log_feedback_cycle(repo_name, pr_number, pr_head_ref, pr_base_ref, file_name)
+        self.log_feedback_cycle(repo_name, pr_number, pr_head_ref, pr_base_ref, file_name, regenerated_files)
         
         return True
     
-    def log_feedback_cycle(self, repo_name, pr_number, pr_head_ref, pr_base_ref, file_name):
+    def log_feedback_cycle(self, repo_name, pr_number, pr_head_ref, pr_base_ref, file_name, regenerated_files):
         """Log the feedback cycle for audit compliance"""
         try:
-            # Read regenerated results
-            with open("json_output/regenerated_results.json", "r") as f:
-                regenerated_data = json.load(f)
-            
-            if file_name in regenerated_data:
-                file_data = regenerated_data[file_name]
-                
+            if file_name in regenerated_files:
+                file_data = regenerated_files[file_name]
                 self.audit_logger.log_feedback_cycle(
                     repo_name=repo_name,
                     pr_number=pr_number,
@@ -214,10 +196,8 @@ class PRWatcher:
                     updated_code=file_data["updated_code"],
                     processing_timestamp=datetime.now()
                 )
-                
                 # Mark file as processed
                 self.audit_logger.mark_file_processed(repo_name, pr_number, file_name)
-                
         except Exception as e:
             print(f"[Watcher] Error logging feedback cycle: {e}")
     
@@ -254,30 +234,19 @@ class PRWatcher:
             "pr_branch": pr_head_ref,
             "main_branch": pr_base_ref
         }
-        # Save PR info for step3
-        with open("json_output/step2_output.json", "w") as f:
-            json.dump(pr_info, f, indent=2)
-        print(f"[Watcher] Saved PR info for ALL files in PR #{pr_number}")
-        # Run step3_regenerate.py
-        print(f"[Watcher] Running step3_regenerate.py for ALL files...")
-        result = subprocess.run(["python", "step3_regenerate.py"], capture_output=True, text=True)
-        if result.returncode != 0:
-            print(f"[Watcher] Error in step3: {result.stderr}")
+        print(f"[Watcher] Running step3_regenerate for ALL files...")
+        regenerated_files = regenerate_files(pr_info)
+        if regenerated_files is None:
+            print(f"[Watcher] Error in step3 for ALL files")
             return False
         print(f"[Watcher] Completed step3 for ALL files")
-        # Run step4_commit.py
-        print(f"[Watcher] Running step4_commit.py for ALL files...")
-        result = subprocess.run(["python", "step4_commit.py"], capture_output=True, text=True)
-        if result.returncode != 0:
-            print(f"[Watcher] Error in step4: {result.stderr}")
-            return False
+        print(f"[Watcher] Running step4_commit for ALL files...")
+        commit_regenerated_files(pr_info, regenerated_files)
         print(f"[Watcher] Completed step4 for ALL files")
         # Log the feedback cycle for audit for all files
         try:
-            with open("json_output/regenerated_results.json", "r") as f:
-                regenerated_data = json.load(f)
-            for file_name in regenerated_data:
-                self.log_feedback_cycle(repo_name, pr_number, pr_head_ref, pr_base_ref, file_name)
+            for file_name in regenerated_files:
+                self.log_feedback_cycle(repo_name, pr_number, pr_head_ref, pr_base_ref, file_name, regenerated_files)
         except Exception as e:
             print(f"[Watcher] Error logging feedback cycle for all files: {e}")
         return True
