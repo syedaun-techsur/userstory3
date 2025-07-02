@@ -17,12 +17,12 @@ gh = Github(GITHUB_TOKEN)
 
 # === CONFIGURATION ===
 # Read PR info from step2_output.json
-with open("json_output/step2_output.json", "r") as f:
-    pr_info = json.load(f)
-REPO_NAME = pr_info["repo_name"]
-AI_REFINE_TAG = pr_info["ai_refine_tag"]
-PR_NUMBER = pr_info["pr_number"]
-TARGET_FILE = pr_info.get("target_file")  # New: specific file to process
+# with open("json_output/step2_output.json", "r") as f:
+#     pr_info = json.load(f)
+# REPO_NAME = pr_info["repo_name"]
+# AI_REFINE_TAG = pr_info["ai_refine_tag"]
+# PR_NUMBER = pr_info["pr_number"]
+# TARGET_FILE = pr_info.get("target_file")  # New: specific file to process
 MAX_CONTEXT_CHARS = 500000  # Increased significantly for GPT-4.1 (1M tokens ≈ 4M chars)
 
 def get_pr_by_number(repo_name: str, pr_number: int):

@@ -14,13 +14,6 @@ def normalize_code(code):
 load_dotenv()
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
-# Read PR info from step2_output.json
-with open("json_output/step2_output.json", "r") as f:
-    pr_info = json.load(f)
-REPO_NAME = pr_info["repo_name"]
-PR_NUMBER = pr_info["pr_number"]
-UPDATED_FILES_JSON = "json_output/regenerated_results.json"
-
 def commit_regenerated_files(pr_info, regenerated_files):
     REPO_NAME = pr_info["repo_name"]
     PR_NUMBER = pr_info["pr_number"]
