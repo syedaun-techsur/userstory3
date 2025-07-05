@@ -2,12 +2,19 @@ import re
 import os
 import asyncio
 import json
+import subprocess
+import tempfile
 from typing import Dict, Set, Optional
 from mcp import ClientSession
 from mcp.client.stdio import stdio_client
 from mcp import StdioServerParameters
 from dotenv import load_dotenv
 from github import Github
+try:
+    from git import Repo  # type: ignore
+except ImportError:
+    print("GitPython not installed. Run: pip install GitPython")
+    Repo = None
 
 load_dotenv()
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
@@ -23,7 +30,7 @@ gh = Github(GITHUB_TOKEN)
 # AI_REFINE_TAG = pr_info["ai_refine_tag"]
 # PR_NUMBER = pr_info["pr_number"]
 # TARGET_FILE = pr_info.get("target_file")  # New: specific file to process
-MAX_CONTEXT_CHARS = 500000  # Increased significantly for GPT-4.1 (1M tokens ≈ 4M chars)
+MAX_CONTEXT_CHARS = 4000000  # GPT-4.1 Mini has 1M+ token context window (1M tokens ≈ 4M chars)
 
 def get_pr_by_number(repo_name: str, pr_number: int):
     repo = gh.get_repo(repo_name)
@@ -188,6 +195,11 @@ async def regenerate_code_with_mcp(files: Dict[str, str], requirements: str, pr,
     regenerated = {}
     server_params = StdioServerParameters(command="python", args=["server.py"])
 
+    # Accumulate total token usage
+    total_prompt_tokens = 0
+    total_completion_tokens = 0
+    total_tokens = 0
+
     try:
         async with stdio_client(server_params) as (read_stream, write_stream):
             async with ClientSession(read_stream, write_stream) as session:
@@ -235,7 +247,32 @@ async def regenerate_code_with_mcp(files: Dict[str, str], requirements: str, pr,
                             print(f"[Step3] Warning: No content in response for {file_name}")
                             response = ""
                         
-                        # print(f"\nRaw LLM response for {file_name}:\n{'-'*80}\n{response}\n{'-'*80}")
+                        # Print token usage if available and accumulate totals
+                        if result.content and len(result.content) > 1:
+                            token_usage_item = result.content[1]
+                            if hasattr(token_usage_item, 'type') and token_usage_item.type == 'text' and hasattr(token_usage_item, 'text'):
+                                print(f"[Step3] {token_usage_item.text}")
+                                usage_str = token_usage_item.text.replace("Token usage: ", "").strip()
+                                print(f"[DEBUG] Raw usage_str: {usage_str}")
+                                if usage_str and usage_str != "unavailable":
+                                    try:
+                                        # Try to extract numbers using regex for CompletionUsage object
+                                        prompt_match = re.search(r'prompt_tokens=(\d+)', usage_str)
+                                        completion_match = re.search(r'completion_tokens=(\d+)', usage_str)
+                                        total_match = re.search(r'total_tokens=(\d+)', usage_str)
+                                        usage_dict = {}
+                                        if prompt_match:
+                                            usage_dict['prompt_tokens'] = int(prompt_match.group(1))
+                                        if completion_match:
+                                            usage_dict['completion_tokens'] = int(completion_match.group(1))
+                                        if total_match:
+                                            usage_dict['total_tokens'] = int(total_match.group(1))
+                                        print(f"[DEBUG] Parsed usage_dict: {usage_dict}")
+                                        total_prompt_tokens += usage_dict.get('prompt_tokens', 0)
+                                        total_completion_tokens += usage_dict.get('completion_tokens', 0)
+                                        total_tokens += usage_dict.get('total_tokens', 0)
+                                    except Exception as e:
+                                        print(f"[Step3] Warning: Could not parse token usage for {file_name}: {e}")
 
                         # Extract changes - look for changes both inside and outside <think> block
                         changes = ""
@@ -354,6 +391,15 @@ async def regenerate_code_with_mcp(files: Dict[str, str], requirements: str, pr,
                         }
                         continue
 
+        # After all files processed, print total token usage
+        print(f"[Step3] TOTAL TOKEN USAGE: prompt_tokens={total_prompt_tokens}, completion_tokens={total_completion_tokens}, total_tokens={total_tokens}")
+        # Calculate and print total API price for OpenAI GPT-4.1 Mini (as of 2024)
+        # Pricing: $0.42 per 1M input tokens ($0.00042 per 1K), $1.68 per 1M output tokens ($0.00168 per 1K)
+        input_price = (total_prompt_tokens / 1000) * 0.00042
+        output_price = (total_completion_tokens / 1000) * 0.00168
+        total_price = input_price + output_price
+        print(f"[Step3] OpenAI GPT-4.1 Mini API PRICING: Total=${total_price:.4f} (input=${input_price:.4f}, output=${output_price:.4f})")
+
     except Exception as e:
         print(f"[Step3] Error with MCP client: {e}")
         # If MCP fails, add all files with original code as fallback
@@ -365,6 +411,106 @@ async def regenerate_code_with_mcp(files: Dict[str, str], requirements: str, pr,
             }
 
     return regenerated
+
+def process_pr_with_local_repo(pr_info, regenerated_files):
+    """Clone PR branch, apply LLM changes, generate lockfile, and prepare for future test generation"""
+    
+    if not regenerated_files:
+        print("[LocalRepo] No files to process")
+        return regenerated_files
+    
+    if Repo is None:
+        print("[LocalRepo] ❌ GitPython not available. Skipping local repo processing.")
+        print("[LocalRepo] Install with: pip install GitPython")
+        return regenerated_files
+    
+    REPO_NAME = pr_info["repo_name"]
+    PR_BRANCH = pr_info["pr_branch"]
+    
+    print(f"[LocalRepo] Starting local processing for {REPO_NAME} branch {PR_BRANCH}")
+    
+    try:
+        # Create temporary directory for the repo
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_path = os.path.join(temp_dir, "repo")
+            
+            print(f"[LocalRepo] Cloning {REPO_NAME} branch {PR_BRANCH}...")
+            
+            # Clone the specific branch
+            repo_url = f"https://{GITHUB_TOKEN}@github.com/{REPO_NAME}.git"
+            repo = Repo.clone_from(repo_url, repo_path, branch=PR_BRANCH)
+            
+            # Apply all LLM changes to local files
+            print(f"[LocalRepo] Applying LLM changes to {len(regenerated_files)} files...")
+            
+            for file_path, file_data in regenerated_files.items():
+                local_file_path = os.path.join(repo_path, file_path)
+                
+                # Create directories if they don't exist
+                os.makedirs(os.path.dirname(local_file_path), exist_ok=True)
+                
+                # Write the LLM-refined content to the local file
+                with open(local_file_path, "w", encoding="utf-8") as f:
+                    f.write(file_data["updated_code"])
+                
+                print(f"[LocalRepo] ✓ Applied LLM changes to {file_path}")
+            
+            # Generate lockfile if package.json was changed
+            if "package.json" in regenerated_files:
+                print("[LocalRepo] package.json detected, running npm install to generate lockfile...")
+                
+                try:
+                    # Run npm install
+                    result = subprocess.run(
+                        ["npm", "install"],
+                        cwd=repo_path,
+                        capture_output=True,
+                        text=True,
+                        timeout=300  # 5 minute timeout
+                    )
+                    
+                    if result.returncode == 0:
+                        print("[LocalRepo] ✓ npm install completed successfully")
+                        
+                        # Read the newly generated package-lock.json
+                        lockfile_path = os.path.join(repo_path, "package-lock.json")
+                        if os.path.exists(lockfile_path):
+                            with open(lockfile_path, "r", encoding="utf-8") as f:
+                                lockfile_content = f.read()
+                            
+                            # Add the lockfile to regenerated_files for GitHub API push
+                            regenerated_files["package-lock.json"] = {
+                                "old_code": "",  # Could fetch existing lockfile from GitHub if needed
+                                "changes": "Regenerated lockfile after package.json update via npm install",
+                                "updated_code": lockfile_content
+                            }
+                            print("[LocalRepo] ✓ Generated and added package-lock.json to commit")
+                        else:
+                            print("[LocalRepo] ⚠️ Warning: package-lock.json not generated by npm install")
+                    else:
+                        print(f"[LocalRepo] ❌ npm install failed with return code {result.returncode}")
+                        print(f"[LocalRepo] stdout: {result.stdout}")
+                        print(f"[LocalRepo] stderr: {result.stderr}")
+                
+                except subprocess.TimeoutExpired:
+                    print("[LocalRepo] ❌ npm install timed out after 5 minutes")
+                except FileNotFoundError:
+                    print("[LocalRepo] ❌ npm not found. Please ensure Node.js and npm are installed.")
+                except Exception as e:
+                    print(f"[LocalRepo] ❌ Error during npm install: {e}")
+            
+            # TODO: Future user story - Generate test cases here
+            # print("[LocalRepo] Preparing for test case generation...")
+            # test_files = generate_test_cases(repo_path, regenerated_files)
+            # regenerated_files.update(test_files)
+            
+            print(f"[LocalRepo] ✓ Local processing completed. Final file count: {len(regenerated_files)}")
+            
+    except Exception as e:
+        print(f"[LocalRepo] ❌ Error during local repo processing: {e}")
+        print("[LocalRepo] Continuing with original files...")
+    
+    return regenerated_files
 
 def regenerate_files(pr_info):
     REPO_NAME = pr_info["repo_name"]
@@ -396,4 +542,8 @@ def regenerate_files(pr_info):
     print(f"Requirements from README.md:\n{'-'*60}\n{requirements_text}\n{'-'*60}")
 
     regenerated_files = asyncio.run(regenerate_code_with_mcp(files_for_update, requirements_text, pr, pr_info))
+    
+    # Process files locally (clone repo, apply changes, generate lockfile)
+    regenerated_files = process_pr_with_local_repo(pr_info, regenerated_files)
+    
     return regenerated_files

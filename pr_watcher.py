@@ -164,12 +164,12 @@ class PRWatcher:
             "main_branch": pr_base_ref
         }
         
-        print(f"[Watcher] Running step3_regenerate for {file_name}...")
+        print(f"[Watcher] Running step3_regenerate (LLM + Local Processing) for {file_name}...")
         regenerated_files = regenerate_files(pr_info)
         if regenerated_files is None:
             print(f"[Watcher] Error in step3 for {file_name}")
             return False
-        print(f"[Watcher] Completed step3 for {file_name}")
+        print(f"[Watcher] Completed step3 (LLM + Local Processing) for {file_name}")
         
         print(f"[Watcher] Running step4_commit for {file_name}...")
         commit_regenerated_files(pr_info, regenerated_files)
@@ -234,12 +234,12 @@ class PRWatcher:
             "pr_branch": pr_head_ref,
             "main_branch": pr_base_ref
         }
-        print(f"[Watcher] Running step3_regenerate for ALL files...")
+        print(f"[Watcher] Running step3_regenerate (LLM + Local Processing) for ALL files...")
         regenerated_files = regenerate_files(pr_info)
         if regenerated_files is None:
             print(f"[Watcher] Error in step3 for ALL files")
             return False
-        print(f"[Watcher] Completed step3 for ALL files")
+        print(f"[Watcher] Completed step3 (LLM + Local Processing) for ALL files")
         print(f"[Watcher] Running step4_commit for ALL files...")
         commit_regenerated_files(pr_info, regenerated_files)
         print(f"[Watcher] Completed step4 for ALL files")
