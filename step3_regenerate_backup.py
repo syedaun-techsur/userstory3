@@ -412,20 +412,8 @@ async def regenerate_code_with_mcp(files: Dict[str, str], requirements: str, pr,
 
     return regenerated
 
-def get_persistent_workspace(repo_name, pr_branch, pr_number):
-    """Get or create persistent workspace for this PR"""
-    # Create workspace directory
-    workspace_base = "workspace"
-    os.makedirs(workspace_base, exist_ok=True)
-    
-    # Use repo name and PR number for unique workspace
-    safe_repo_name = repo_name.replace('/', '_').replace('\\', '_')
-    workspace_dir = os.path.join(workspace_base, f"{safe_repo_name}_PR{pr_number}")
-    
-    return workspace_dir
-
 def process_pr_with_local_repo(pr_info, regenerated_files):
-    """Clone PR branch, apply LLM changes, generate lockfile, and prepare for test generation"""
+    """Clone PR branch, apply LLM changes, generate lockfile, and prepare for future test generation"""
     
     if not regenerated_files:
         print("[LocalRepo] No files to process")
@@ -438,111 +426,91 @@ def process_pr_with_local_repo(pr_info, regenerated_files):
     
     REPO_NAME = pr_info["repo_name"]
     PR_BRANCH = pr_info["pr_branch"]
-    PR_NUMBER = pr_info["pr_number"]
     
     print(f"[LocalRepo] Starting local processing for {REPO_NAME} branch {PR_BRANCH}")
     
     try:
-        # Get persistent workspace for this PR
-        workspace_dir = get_persistent_workspace(REPO_NAME, PR_BRANCH, PR_NUMBER)
-        
-        # Clone or update the repository
-        if os.path.exists(workspace_dir):
-            print(f"[LocalRepo] Updating existing workspace: {workspace_dir}")
-            try:
-                repo = Repo(workspace_dir)
-                repo.remotes.origin.pull()
-            except Exception as e:
-                print(f"[LocalRepo] Error updating workspace, recreating: {e}")
-                import shutil
-                shutil.rmtree(workspace_dir)
-                repo_url = f"https://{GITHUB_TOKEN}@github.com/{REPO_NAME}.git"
-                repo = Repo.clone_from(repo_url, workspace_dir, branch=PR_BRANCH)
-        else:
-            print(f"[LocalRepo] Creating new workspace: {workspace_dir}")
+        # Create temporary directory for the repo
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_path = os.path.join(temp_dir, "repo")
+            
+            print(f"[LocalRepo] Cloning {REPO_NAME} branch {PR_BRANCH}...")
+            
+            # Clone the specific branch
             repo_url = f"https://{GITHUB_TOKEN}@github.com/{REPO_NAME}.git"
-            repo = Repo.clone_from(repo_url, workspace_dir, branch=PR_BRANCH)
-        
-        repo_path = workspace_dir
-        
-        # Apply all LLM changes to local files
-        print(f"[LocalRepo] Applying LLM changes to {len(regenerated_files)} files...")
-        
-        for file_path, file_data in regenerated_files.items():
-            local_file_path = os.path.join(repo_path, file_path)
+            repo = Repo.clone_from(repo_url, repo_path, branch=PR_BRANCH)
             
-            # Create directories if they don't exist
-            os.makedirs(os.path.dirname(local_file_path), exist_ok=True)
+            # Apply all LLM changes to local files
+            print(f"[LocalRepo] Applying LLM changes to {len(regenerated_files)} files...")
             
-            # Write the LLM-refined content to the local file
-            with open(local_file_path, "w", encoding="utf-8") as f:
-                f.write(file_data["updated_code"])
-            
-            print(f"[LocalRepo] ✓ Applied LLM changes to {file_path}")
-        
-        # Generate lockfile if package.json was changed
-        if "package.json" in regenerated_files:
-            print("[LocalRepo] package.json detected, running npm install to generate lockfile...")
-            
-            try:
-                # Run npm install
-                result = subprocess.run(
-                    ["npm", "install"],
-                    cwd=repo_path,
-                    capture_output=True,
-                    text=True,
-                    timeout=300  # 5 minute timeout
-                )
+            for file_path, file_data in regenerated_files.items():
+                local_file_path = os.path.join(repo_path, file_path)
                 
-                if result.returncode == 0:
-                    print("[LocalRepo] ✓ npm install completed successfully")
-                    
-                    # Read the newly generated package-lock.json
-                    lockfile_path = os.path.join(repo_path, "package-lock.json")
-                    if os.path.exists(lockfile_path):
-                        with open(lockfile_path, "r", encoding="utf-8") as f:
-                            lockfile_content = f.read()
-                        
-                        # Add the lockfile to regenerated_files for GitHub API push
-                        regenerated_files["package-lock.json"] = {
-                            "old_code": "",  # Could fetch existing lockfile from GitHub if needed
-                            "changes": "Regenerated lockfile after package.json update via npm install",
-                            "updated_code": lockfile_content
-                        }
-                        print("[LocalRepo] ✓ Generated and added package-lock.json to commit")
-                    else:
-                        print("[LocalRepo] ⚠️ Warning: package-lock.json not generated by npm install")
-                else:
-                    print(f"[LocalRepo] ❌ npm install failed with return code {result.returncode}")
-                    print(f"[LocalRepo] stdout: {result.stdout}")
-                    print(f"[LocalRepo] stderr: {result.stderr}")
+                # Create directories if they don't exist
+                os.makedirs(os.path.dirname(local_file_path), exist_ok=True)
+                
+                # Write the LLM-refined content to the local file
+                with open(local_file_path, "w", encoding="utf-8") as f:
+                    f.write(file_data["updated_code"])
+                
+                print(f"[LocalRepo] ✓ Applied LLM changes to {file_path}")
             
-            except subprocess.TimeoutExpired:
-                print("[LocalRepo] ❌ npm install timed out after 5 minutes")
-            except FileNotFoundError:
-                print("[LocalRepo] ❌ npm not found. Please ensure Node.js and npm are installed.")
-            except Exception as e:
-                print(f"[LocalRepo] ❌ Error during npm install: {e}")
-        
-        # TODO: Future user story - Generate and run tests here
-        # print("[LocalRepo] Preparing for test generation and execution...")
-        # test_files = generate_test_cases(repo_path, regenerated_files)
-        # regenerated_files.update(test_files)
-        # 
-        # # Run tests with Jest, Selenium, Cucumber
-        # run_jest_tests(repo_path)
-        # run_selenium_tests(repo_path)
-        # run_cucumber_tests(repo_path)
-        
-        print(f"[LocalRepo] ✓ Local processing completed. Final file count: {len(regenerated_files)}")
-        print(f"[LocalRepo] ✓ Workspace preserved at: {workspace_dir}")
-        
+            # Generate lockfile if package.json was changed
+            if "package.json" in regenerated_files:
+                print("[LocalRepo] package.json detected, running npm install to generate lockfile...")
+                
+                try:
+                    # Run npm install
+                    result = subprocess.run(
+                        ["npm", "install"],
+                        cwd=repo_path,
+                        capture_output=True,
+                        text=True,
+                        timeout=300  # 5 minute timeout
+                    )
+                    
+                    if result.returncode == 0:
+                        print("[LocalRepo] ✓ npm install completed successfully")
+                        
+                        # Read the newly generated package-lock.json
+                        lockfile_path = os.path.join(repo_path, "package-lock.json")
+                        if os.path.exists(lockfile_path):
+                            with open(lockfile_path, "r", encoding="utf-8") as f:
+                                lockfile_content = f.read()
+                            
+                            # Add the lockfile to regenerated_files for GitHub API push
+                            regenerated_files["package-lock.json"] = {
+                                "old_code": "",  # Could fetch existing lockfile from GitHub if needed
+                                "changes": "Regenerated lockfile after package.json update via npm install",
+                                "updated_code": lockfile_content
+                            }
+                            print("[LocalRepo] ✓ Generated and added package-lock.json to commit")
+                        else:
+                            print("[LocalRepo] ⚠️ Warning: package-lock.json not generated by npm install")
+                    else:
+                        print(f"[LocalRepo] ❌ npm install failed with return code {result.returncode}")
+                        print(f"[LocalRepo] stdout: {result.stdout}")
+                        print(f"[LocalRepo] stderr: {result.stderr}")
+                
+                except subprocess.TimeoutExpired:
+                    print("[LocalRepo] ❌ npm install timed out after 5 minutes")
+                except FileNotFoundError:
+                    print("[LocalRepo] ❌ npm not found. Please ensure Node.js and npm are installed.")
+                except Exception as e:
+                    print(f"[LocalRepo] ❌ Error during npm install: {e}")
+            
+            # TODO: Future user story - Generate test cases here
+            # print("[LocalRepo] Preparing for test case generation...")
+            # test_files = generate_test_cases(repo_path, regenerated_files)
+            # regenerated_files.update(test_files)
+            
+            print(f"[LocalRepo] ✓ Local processing completed. Final file count: {len(regenerated_files)}")
+            
     except Exception as e:
         print(f"[LocalRepo] ❌ Error during local repo processing: {e}")
         print("[LocalRepo] Continuing with original files...")
     
     return regenerated_files
-
 
 def regenerate_files(pr_info):
     REPO_NAME = pr_info["repo_name"]

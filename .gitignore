@@ -1,1 +1,4 @@
 .env
+# Workspace directories for local processing
+workspace/
+
