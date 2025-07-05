@@ -3,8 +3,7 @@ import os
 import asyncio
 import json
 import subprocess
-import tempfile
-from typing import Dict, Set, Optional
+from typing import Dict, Set
 from mcp import ClientSession
 from mcp.client.stdio import stdio_client
 from mcp import StdioServerParameters
@@ -22,14 +21,6 @@ GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 # Initialize GitHub client directly
 gh = Github(GITHUB_TOKEN)
 
-# === CONFIGURATION ===
-# Read PR info from step2_output.json
-# with open("json_output/step2_output.json", "r") as f:
-#     pr_info = json.load(f)
-# REPO_NAME = pr_info["repo_name"]
-# AI_REFINE_TAG = pr_info["ai_refine_tag"]
-# PR_NUMBER = pr_info["pr_number"]
-# TARGET_FILE = pr_info.get("target_file")  # New: specific file to process
 MAX_CONTEXT_CHARS = 4000000  # GPT-4.1 Mini has 1M+ token context window (1M tokens ≈ 4M chars)
 
 def get_pr_by_number(repo_name: str, pr_number: int):
@@ -50,9 +41,9 @@ def get_pr_by_number(repo_name: str, pr_number: int):
         "user": pr.user.login
     }
 
-def collect_files_for_refinement(repo_name: str, pr_number: int, target_file: Optional[str] = None, pr_info=None) -> Dict[str, str]:
+def collect_files_for_refinement(repo_name: str, pr_number: int, pr_info=None) -> Dict[str, str]:
     """
-    Collect all files in the PR for refinement (ignore target_file and ai-refine comments).
+    Collect all files in the PR for refinement.
     """
     print(f"[DEBUG] Starting collect_files_for_refinement for {repo_name} PR #{pr_number}")
     repo = gh.get_repo(repo_name)
@@ -155,8 +146,6 @@ def fetch_requirements_from_readme(repo_name: str, branch: str) -> str:
     except Exception as e:
         print(f"Error reading README.md: {e}")
         return "# No README found\n\nPlease provide coding standards and requirements."
-
-## before this should be implemented and come as a output from step 1 and 2
 
 def compose_prompt(requirements: str, code: str, file_name: str, context: str) -> str:
     # Get the file extension for the AI to understand the language
@@ -546,9 +535,7 @@ def process_pr_with_local_repo(pr_info, regenerated_files):
 
 def regenerate_files(pr_info):
     REPO_NAME = pr_info["repo_name"]
-    AI_REFINE_TAG = pr_info["ai_refine_tag"]
     PR_NUMBER = pr_info["pr_number"]
-    TARGET_FILE = pr_info.get("target_file")
     
     pr = get_pr_by_number(REPO_NAME, PR_NUMBER)
     if "error" in pr:
@@ -557,13 +544,9 @@ def regenerate_files(pr_info):
     
     print(f"Loaded PR #{pr['number']}: {pr['title']}")
     print(f"Branch: {pr['head']['ref']}")
-    
-    if TARGET_FILE:
-        print(f"Processing specific file: {TARGET_FILE}")
-    else:
-        print("Processing all files with ai-refine comments")
+    print("Processing all files in the PR")
 
-    files_for_update = collect_files_for_refinement(REPO_NAME, PR_NUMBER, TARGET_FILE, pr_info)
+    files_for_update = collect_files_for_refinement(REPO_NAME, PR_NUMBER, pr_info)
     print(f"Files selected for refinement: {list(files_for_update.keys())}")
 
     if not files_for_update:

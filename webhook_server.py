@@ -3,7 +3,7 @@ import hmac
 import hashlib
 import os
 import json
-from pr_watcher import PRWatcher, AI_REFINE_TAG
+from pr_watcher import PRWatcher
 
 app = Flask(__name__)
 GITHUB_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET")  # Set this in your environment
