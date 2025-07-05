@@ -8,7 +8,7 @@ from mcp import ClientSession
 from mcp.client.stdio import stdio_client
 from mcp import StdioServerParameters
 from dotenv import load_dotenv
-from github import Github
+from github_mcp_client import create_github_client
 try:
     from git import Repo  # type: ignore
 except ImportError:
@@ -18,64 +18,54 @@ except ImportError:
 load_dotenv()
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
-# Initialize GitHub client directly
-gh = Github(GITHUB_TOKEN)
+# Initialize GitHub MCP client
+github_client = create_github_client()
 
 MAX_CONTEXT_CHARS = 4000000  # GPT-4.1 Mini has 1M+ token context window (1M tokens ≈ 4M chars)
 
 def get_pr_by_number(repo_name: str, pr_number: int):
-    repo = gh.get_repo(repo_name)
-    pr = repo.get_pull(pr_number)
-    return {
-        "number": pr.number,
-        "title": pr.title,
-        "state": pr.state,
-        "head": {
-            "ref": pr.head.ref,
-            "sha": pr.head.sha
-        },
-        "base": {
-            "ref": pr.base.ref,
-            "sha": pr.base.sha
-        },
-        "user": pr.user.login
-    }
+    return github_client.get_pr_by_number(repo_name, pr_number)
 
 def collect_files_for_refinement(repo_name: str, pr_number: int, pr_info=None) -> Dict[str, str]:
     """
     Collect all files in the PR for refinement.
     """
     print(f"[DEBUG] Starting collect_files_for_refinement for {repo_name} PR #{pr_number}")
-    repo = gh.get_repo(repo_name)
-    pr = repo.get_pull(pr_number)
-    file_names: Set[str] = set()
-
-    # Always process all files in the PR
+    
+    # Get PR files through MCP
     print(f"[DEBUG] Getting PR files...")
-    pr_files = pr.get_files()
-    print(f"[DEBUG] Got {len(list(pr_files))} PR files")
+    pr_files = github_client.get_pr_files(repo_name, pr_number)
+    if isinstance(pr_files, dict) and pr_files.get("error"):
+        print(f"Error getting PR files: {pr_files.get('error', 'Unknown error')}")
+        return {}
+    
+    print(f"[DEBUG] Got {len(pr_files)} PR files")
+    file_names: Set[str] = set()
+    
     for file in pr_files:
         # Skip lock files in any directory
-        if file.filename.endswith("package-lock.json") or file.filename.endswith("package.lock.json"):
-            print(f"[DEBUG] Skipping lock file: {file.filename}")
+        if file["filename"].endswith("package-lock.json") or file["filename"].endswith("package.lock.json"):
+            print(f"[DEBUG] Skipping lock file: {file['filename']}")
             continue
         # Skip GitHub workflow and config files
-        if file.filename.startswith('.github/'):
-            print(f"[DEBUG] Skipping GitHub workflow or config file: {file.filename}")
+        if file["filename"].startswith('.github/'):
+            print(f"[DEBUG] Skipping GitHub workflow or config file: {file['filename']}")
             continue
-        file_names.add(file.filename)
+        file_names.add(file["filename"])
 
     print(f"[DEBUG] File names to process: {file_names}")
     result = {}
+    ref = pr_info.get("pr_branch", "main") if pr_info else "main"
+    
     for file_name in file_names:
         try:
             print(f"[DEBUG] Getting content for {file_name}...")
-            content = repo.get_contents(file_name, ref=pr_info.get("pr_branch", "main") if pr_info else "main")
-            # Handle both single file and list of files
-            if isinstance(content, list):
-                content = content[0]  # Take the first file if it's a list
-            result[file_name] = content.decoded_content.decode("utf-8")
-            print(f"[DEBUG] Successfully got content for {file_name}")
+            content = github_client.get_file_content(repo_name, file_name, ref=ref)
+            if "error" not in content:
+                result[file_name] = content["content"]
+                print(f"[DEBUG] Successfully got content for {file_name}")
+            else:
+                print(f"Error reading file {file_name}: {content['error']}")
         except Exception as e:
             print(f"Error reading file {file_name}: {e}")
             continue
@@ -84,33 +74,37 @@ def collect_files_for_refinement(repo_name: str, pr_number: int, pr_info=None) -
     return result
 
 def fetch_repo_context(repo_name: str, pr_number: int, target_file: str, pr_info=None) -> str:
-    repo = gh.get_repo(repo_name)
-    pr = repo.get_pull(pr_number)
     context = ""
     total_chars = 0
 
-    pr_files = pr.get_files()
+    # Get PR files through MCP
+    pr_files = github_client.get_pr_files(repo_name, pr_number)
+    if isinstance(pr_files, dict) and pr_files.get("error"):
+        print(f"Error getting PR files: {pr_files.get('error', 'Unknown error')}")
+        return ""
+    
+    ref = pr_info.get("pr_branch", "main") if pr_info else "main"
     
     for file in pr_files:
-        if file.filename == target_file:
+        if file["filename"] == target_file:
             continue
         # Skip lock files in any directory
-        if file.filename.endswith("package-lock.json") or file.filename.endswith("package.lock.json"):
+        if file["filename"].endswith("package-lock.json") or file["filename"].endswith("package.lock.json"):
             continue
         # Skip GitHub workflow and config files
-        if file.filename.startswith('.github/'):
+        if file["filename"].startswith('.github/'):
             continue
         try:
-            content = repo.get_contents(file.filename, ref=pr_info.get("pr_branch", "main") if pr_info else "main")
-            # Handle both single file and list of files
-            if isinstance(content, list):
-                content = content[0]  # Take the first file if it's a list
+            content = github_client.get_file_content(repo_name, file["filename"], ref=ref)
+            if "error" in content:
+                print(f"Error reading file {file['filename']}: {content['error']}")
+                continue
             
-            # Get the FULL file content instead of just 1000 chars
-            full_content = content.decoded_content.decode("utf-8")
+            # Get the FULL file content
+            full_content = content["content"]
             file_size = len(full_content)
             
-            section = f"\n// File: {file.filename} ({file_size} chars)\n{full_content}\n"
+            section = f"\n// File: {file['filename']} ({file_size} chars)\n{full_content}\n"
             
             # Still keep a reasonable limit to avoid overwhelming the model
             if total_chars + len(section) > MAX_CONTEXT_CHARS:
@@ -120,21 +114,17 @@ def fetch_repo_context(repo_name: str, pr_number: int, target_file: str, pr_info
             total_chars += len(section)
             
         except Exception as e:
-            print(f"Error reading file {file.filename}: {e}")
+            print(f"Error reading file {file['filename']}: {e}")
             continue
     return context
 
 def fetch_requirements_from_readme(repo_name: str, branch: str) -> str:
-    repo = gh.get_repo(repo_name)
     try:
-        contents = repo.get_contents("README.md", ref=branch)
-        if contents:
-            # get_contents returns a list, so we need to get the first item
-            if isinstance(contents, list):
-                return contents[0].decoded_content.decode("utf-8")
-            else:
-                return contents.decoded_content.decode("utf-8")
+        content = github_client.get_file_content(repo_name, "README.md", ref=branch)
+        if "error" not in content:
+            return content["content"]
         else:
+            print(f"Error reading README.md: {content['error']}")
             return "# No README found\n\nPlease provide coding standards and requirements."
     except Exception as e:
         print(f"Error reading README.md: {e}")

@@ -44,7 +44,32 @@ class GitHubMCPClient:
     def call_tool_sync(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
         """Synchronous wrapper for tool calls"""
         try:
-            return asyncio.run(self._call_tool(tool_name, arguments))
+            # Check if we're already in an event loop
+            try:
+                loop = asyncio.get_running_loop()
+                # If we are, we need to use a different approach
+                # Since we can't use asyncio.run() from within an event loop
+                # we'll create a new event loop in a thread
+                import concurrent.futures
+                import threading
+                
+                def run_in_new_loop():
+                    # Create a new event loop for this thread
+                    new_loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(new_loop)
+                    try:
+                        return new_loop.run_until_complete(self._call_tool(tool_name, arguments))
+                    finally:
+                        new_loop.close()
+                
+                # Run in a thread with a new event loop
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(run_in_new_loop)
+                    return future.result(timeout=35)  # 35 second timeout (5 more than tool timeout)
+                    
+            except RuntimeError:
+                # No event loop running, safe to use asyncio.run()
+                return asyncio.run(self._call_tool(tool_name, arguments))
         except Exception as e:
             return {"error": f"MCP client error: {str(e)}"}
     
