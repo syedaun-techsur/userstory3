@@ -200,15 +200,21 @@ def update_file(repo_name: str, file_path: str, message: str, content: str, sha:
             sha=sha,
             branch=branch
         )
+        # Handle case where commit might be None
+        commit_info = {}
+        if result.get("commit"):
+            commit_info["sha"] = getattr(result["commit"], 'sha', None)
+            if hasattr(result["commit"], 'commit') and result["commit"].commit:
+                commit_info["message"] = getattr(result["commit"].commit, 'message', message)
+            else:
+                commit_info["message"] = message
+        
         return {
             "success": True,
-            "commit": {
-                "sha": result["commit"].sha,
-                "message": result["commit"].commit.message
-            },
+            "commit": commit_info,
             "content": {
                 "path": file_path,
-                "sha": getattr(result["content"], 'sha', None)
+                "sha": getattr(result.get("content"), 'sha', None) if result.get("content") else None
             }
         }
     except Exception as e:
@@ -224,15 +230,21 @@ def create_file(repo_name: str, file_path: str, message: str, content: str, bran
             content=content,
             branch=branch
         )
+        # Handle case where commit might be None
+        commit_info = {}
+        if result.get("commit"):
+            commit_info["sha"] = getattr(result["commit"], 'sha', None)
+            if hasattr(result["commit"], 'commit') and result["commit"].commit:
+                commit_info["message"] = getattr(result["commit"].commit, 'message', message)
+            else:
+                commit_info["message"] = message
+        
         return {
             "success": True,
-            "commit": {
-                "sha": result["commit"].sha,
-                "message": result["commit"].commit.message
-            },
+            "commit": commit_info,
             "content": {
                 "path": file_path,
-                "sha": getattr(result["content"], 'sha', None)
+                "sha": getattr(result.get("content"), 'sha', None) if result.get("content") else None
             }
         }
     except Exception as e:
@@ -270,13 +282,19 @@ def get_branch(repo_name: str, branch_name: str) -> Dict[str, Any]:
     try:
         repo = gh.get_repo(repo_name)
         branch = repo.get_branch(branch_name)
+        # Handle case where commit might be None
+        commit_info = {}
+        if branch.commit:
+            commit_info["sha"] = getattr(branch.commit, 'sha', None)
+            if hasattr(branch.commit, 'commit') and branch.commit.commit:
+                commit_info["message"] = getattr(branch.commit.commit, 'message', '')
+            else:
+                commit_info["message"] = ''
+        
         return {
             "name": branch.name,
-            "commit": {
-                "sha": branch.commit.sha,
-                "message": branch.commit.commit.message
-            },
-            "protected": branch.protected
+            "commit": commit_info,
+            "protected": getattr(branch, 'protected', False)
         }
     except Exception as e:
         return {"error": str(e)}

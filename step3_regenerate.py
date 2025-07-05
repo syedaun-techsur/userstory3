@@ -3,7 +3,7 @@ import os
 import asyncio
 import json
 import subprocess
-from typing import Dict, Set
+from typing import Dict, Set, Optional
 from mcp import ClientSession
 from mcp.client.stdio import stdio_client
 from mcp import StdioServerParameters
@@ -90,18 +90,15 @@ def fetch_repo_context(repo_name: str, pr_number: int, target_file: str, pr_info
     total_chars = 0
 
     pr_files = pr.get_files()
-    print(f"[DEBUG] Fetching full context for {len(list(pr_files))} files (excluding {target_file})")
     
     for file in pr_files:
         if file.filename == target_file:
             continue
         # Skip lock files in any directory
         if file.filename.endswith("package-lock.json") or file.filename.endswith("package.lock.json"):
-            print(f"[DEBUG] Skipping lock file in context: {file.filename}")
             continue
         # Skip GitHub workflow and config files
         if file.filename.startswith('.github/'):
-            print(f"[DEBUG] Skipping GitHub workflow or config file in context: {file.filename}")
             continue
         try:
             content = repo.get_contents(file.filename, ref=pr_info.get("pr_branch", "main") if pr_info else "main")
@@ -117,18 +114,14 @@ def fetch_repo_context(repo_name: str, pr_number: int, target_file: str, pr_info
             
             # Still keep a reasonable limit to avoid overwhelming the model
             if total_chars + len(section) > MAX_CONTEXT_CHARS:
-                print(f"[DEBUG] Context limit reached ({total_chars} chars). Stopping at {file.filename}")
                 break
                 
             context += section
             total_chars += len(section)
-            print(f"[DEBUG] Added {file.filename} ({file_size} chars). Total context: {total_chars} chars")
             
         except Exception as e:
             print(f"Error reading file {file.filename}: {e}")
             continue
-
-    print(f"[DEBUG] Final context size: {total_chars} characters")
     return context
 
 def fetch_requirements_from_readme(repo_name: str, branch: str) -> str:
@@ -180,7 +173,201 @@ def compose_prompt(requirements: str, code: str, file_name: str, context: str) -
         f"    - In the ### Updated Code section, return the original code unchanged.\n"
     )
 
+def parse_token_usage(result) -> tuple[int, int, int]:
+    """Parse token usage from MCP response and return (prompt_tokens, completion_tokens, total_tokens)"""
+    if not (result.content and len(result.content) > 1):
+        return 0, 0, 0
+    
+    token_usage_item = result.content[1]
+    if not (hasattr(token_usage_item, 'type') and token_usage_item.type == 'text' and hasattr(token_usage_item, 'text')):
+        return 0, 0, 0
+    
+    usage_str = token_usage_item.text.replace("Token usage: ", "").strip()
+    if not usage_str or usage_str == "unavailable":
+        return 0, 0, 0
+    
+    try:
+        # Extract numbers using regex for CompletionUsage object
+        prompt_match = re.search(r'prompt_tokens=(\d+)', usage_str)
+        completion_match = re.search(r'completion_tokens=(\d+)', usage_str)
+        total_match = re.search(r'total_tokens=(\d+)', usage_str)
+        
+        prompt_tokens = int(prompt_match.group(1)) if prompt_match else 0
+        completion_tokens = int(completion_match.group(1)) if completion_match else 0
+        total_tokens = int(total_match.group(1)) if total_match else 0
+        
+        return prompt_tokens, completion_tokens, total_tokens
+    except Exception:
+        return 0, 0, 0
+
+def extract_response_content(result, file_name: str) -> str:
+    """Extract text content from MCP response"""
+    if not (result.content and len(result.content) > 0):
+        print(f"[Step3] Warning: No content in response for {file_name}")
+        return ""
+    
+    content_item = result.content[0]
+    if hasattr(content_item, 'text') and hasattr(content_item, 'type') and content_item.type == "text":
+        return content_item.text.strip()
+    else:
+        print(f"[Step3] Warning: Unexpected content type for {file_name}")
+        return str(content_item)
+
+def extract_changes(response: str, file_name: str) -> str:
+    """Extract changes section from AI response"""
+    changes = ""
+    
+    # First try to find changes outside <think> block
+    changes_match = re.search(r"### Changes:\n([\s\S]*?)(?=\n```[a-zA-Z0-9]*\n|### Updated Code:|$)", response, re.IGNORECASE)
+    if changes_match:
+        changes = changes_match.group(1).strip()
+    else:
+        # If not found outside, look inside <think> block
+        think_match = re.search(r"<think>([\s\S]*?)</think>", response, re.IGNORECASE)
+        if think_match:
+            think_content = think_match.group(1)
+            changes_match = re.search(r"### Changes:\n([\s\S]*?)(?=\n```[a-zA-Z0-9]*\n|### Updated Code:|$)", think_content, re.IGNORECASE)
+            if changes_match:
+                changes = changes_match.group(1).strip()
+    
+    # Clean up if changes section contains code blocks
+    if changes and "```" in changes:
+        print(f"⚠️ WARNING: Code blocks found in changes section for {file_name}. Attempting to clean up...")
+        changes = re.sub(r'```[a-zA-Z0-9]*\n[\s\S]*?```', '', changes)
+        changes = re.sub(r'\n\s*\n', '\n', changes)  # Clean up extra newlines
+        changes = changes.strip()
+    
+    return changes
+
+def extract_updated_code(response: str) -> str:
+    """Extract updated code from AI response using multiple fallback patterns"""
+    # Pattern 1: Look for code specifically after "### Updated Code:" (most specific)
+    updated_code_match = re.search(r"### Updated Code:\s*\n```[a-zA-Z0-9]*\n([\s\S]*?)```", response, re.IGNORECASE)
+    if updated_code_match:
+        return updated_code_match.group(1).strip()
+    
+    # Pattern 2: If not found, look for code inside <think> block after "### Updated Code:"
+    think_match = re.search(r"<think>([\s\S]*?)</think>", response, re.IGNORECASE)
+    if think_match:
+        think_content = think_match.group(1)
+        updated_code_match = re.search(r"### Updated Code:\s*\n```[a-zA-Z0-9]*\n([\s\S]*?)```", think_content, re.IGNORECASE)
+        if updated_code_match:
+            return updated_code_match.group(1).strip()
+    
+    # Pattern 3: If still not found, look for any code block after "### Updated Code:" anywhere in response
+    updated_code_sections = re.findall(r"### Updated Code:\s*\n```[a-zA-Z0-9]*\n([\s\S]*?)```", response, re.IGNORECASE)
+    if updated_code_sections:
+        return updated_code_sections[-1].strip()  # Take the last occurrence
+    
+    # Pattern 4: Look for code blocks that come directly after changes section
+    changes_end = re.search(r"### Changes:\n([\s\S]*?)(?=\n```[a-zA-Z0-9]*\n|### Updated Code:|$)", response, re.IGNORECASE)
+    if changes_end:
+        after_changes = response[changes_end.end():]
+        code_blocks = re.findall(r"```[a-zA-Z0-9]*\n([\s\S]*?)```", after_changes)
+        if code_blocks:
+            return code_blocks[0].strip()
+    
+    # Pattern 5: Last resort - if multiple code blocks exist, take the last one
+    all_code_blocks = re.findall(r"```[a-zA-Z0-9]*\n([\s\S]*?)```", response)
+    if len(all_code_blocks) > 1:
+        return all_code_blocks[-1].strip()
+    elif len(all_code_blocks) == 1:
+        return all_code_blocks[0].strip()
+    
+    return ""
+
+def cleanup_extracted_code(updated_code: str) -> str:
+    """Clean up extracted code by removing unwanted artifacts"""
+    if not updated_code:
+        return updated_code
+    
+    # Remove any leading/trailing whitespace
+    updated_code = re.sub(r'^[\s\n]*', '', updated_code)
+    updated_code = re.sub(r'[\s\n]*$', '', updated_code)
+    
+    # Remove diff markers and extract only the REPLACE section
+    if '<<<<<<< SEARCH' in updated_code and '>>>>>>> REPLACE' in updated_code:
+        replace_match = re.search(r'=======\n(.*?)\n>>>>>>> REPLACE', updated_code, re.DOTALL)
+        if replace_match:
+            updated_code = replace_match.group(1).strip()
+    
+    # Remove any remaining diff markers
+    updated_code = re.sub(r'<<<<<<< SEARCH.*?=======\n', '', updated_code, flags=re.DOTALL)
+    updated_code = re.sub(r'\n>>>>>>> REPLACE.*', '', updated_code, flags=re.DOTALL)
+    
+    # Clean up any remaining artifacts
+    updated_code = re.sub(r'client/src/.*?\.js\n```javascript\n', '', updated_code)
+    updated_code = re.sub(r'```\n$', '', updated_code)
+    
+    return updated_code
+
+async def process_single_file(session, file_name: str, old_code: str, requirements: str, pr_info: Optional[dict] = None) -> dict:
+    """Process a single file through the AI refinement pipeline"""
+    try:
+        print(f"[Step3] Processing file: {file_name}")
+        
+        # Fetch context and compose prompt
+        if pr_info is None:
+            raise ValueError("pr_info cannot be None")
+        repo_name = pr_info["repo_name"]
+        pr_number = pr_info["pr_number"]
+        context = fetch_repo_context(repo_name, pr_number, file_name, pr_info)
+        prompt = compose_prompt(requirements, old_code, file_name, context)
+        
+        print(f"[Step3] Calling AI for {file_name}...")
+        
+        # Call AI with timeout
+        try:
+            result = await asyncio.wait_for(
+                session.call_tool("codegen", arguments={"prompt": prompt}),
+                timeout=300  # 5 minutes timeout
+            )
+            print(f"[Step3] AI call completed for {file_name}")
+        except asyncio.TimeoutError:
+            print(f"[Step3] TIMEOUT: AI call took longer than 5 minutes for {file_name}")
+            return {
+                "old_code": old_code,
+                "changes": "AI call timed out after 5 minutes",
+                "updated_code": old_code,
+                "token_usage": (0, 0, 0)
+            }
+        
+        # Extract response content
+        response = extract_response_content(result, file_name)
+        
+        # Parse token usage
+        token_usage = parse_token_usage(result)
+        
+        # Extract changes and updated code
+        changes = extract_changes(response, file_name)
+        updated_code = extract_updated_code(response)
+        updated_code = cleanup_extracted_code(updated_code)
+        
+        # Fallback if no updated code found
+        if not updated_code:
+            print(f"⚠️ WARNING: Could not extract updated code for {file_name}. Using original code.")
+            updated_code = old_code
+        
+        print(f"[Step3] Successfully processed {file_name}")
+        
+        return {
+            "old_code": old_code,
+            "changes": changes,
+            "updated_code": updated_code,
+            "token_usage": token_usage
+        }
+        
+    except Exception as e:
+        print(f"[Step3] Error processing file {file_name}: {e}")
+        return {
+            "old_code": old_code,
+            "changes": f"Error during processing: {str(e)}",
+            "updated_code": old_code,
+            "token_usage": (0, 0, 0)
+        }
+
 async def regenerate_code_with_mcp(files: Dict[str, str], requirements: str, pr, pr_info=None) -> Dict[str, Dict[str, str]]:
+    """Main function to regenerate code using MCP - now much cleaner and focused"""
     regenerated = {}
     server_params = StdioServerParameters(command="python", args=["server.py"])
 
@@ -194,196 +381,23 @@ async def regenerate_code_with_mcp(files: Dict[str, str], requirements: str, pr,
             async with ClientSession(read_stream, write_stream) as session:
                 await session.initialize()
 
+                # Process each file
                 for file_name, old_code in files.items():
-                    try:
-                        print(f"[Step3] Processing file: {file_name}")
-                        repo_name = pr_info["repo_name"] if pr_info else pr["repo_name"]
-                        pr_number = pr_info["pr_number"] if pr_info else pr["number"]
-                        context = fetch_repo_context(repo_name, pr_number, file_name, pr_info)
-                        prompt = compose_prompt(requirements, old_code, file_name, context)
-                        
-                        print(f"[Step3] Calling AI for {file_name}...")
-                        print(f"[Step3] Prompt length: {len(prompt)} characters")
-                        
-                        # Add timeout to prevent infinite hanging
-                        try:
-                            result = await asyncio.wait_for(
-                                session.call_tool("codegen", arguments={"prompt": prompt}),
-                                timeout=300  # 5 minutes timeout
-                            )
-                            print(f"[Step3] AI call completed for {file_name}")
-                        except asyncio.TimeoutError:
-                            print(f"[Step3] TIMEOUT: AI call took longer than 5 minutes for {file_name}")
-                            # Use original code as fallback
-                            regenerated[file_name] = {
-                                "old_code": old_code,
-                                "changes": "AI call timed out after 5 minutes",
-                                "updated_code": old_code
-                            }
-                            continue
+                    file_result = await process_single_file(session, file_name, old_code, requirements, pr_info)
+                    
+                    # Extract token usage and accumulate
+                    prompt_tokens, completion_tokens, tokens = file_result.pop("token_usage", (0, 0, 0))
+                    total_prompt_tokens += prompt_tokens
+                    total_completion_tokens += completion_tokens
+                    total_tokens += tokens
+                    
+                    # Store the result
+                    regenerated[file_name] = file_result
 
-                        # Handle MCP response content properly
-                        response = ""
-                        if result.content and len(result.content) > 0:
-                            content_item = result.content[0]
-                            # Check if it's a TextContent object
-                            if hasattr(content_item, 'text') and hasattr(content_item, 'type') and content_item.type == "text":
-                                response = content_item.text.strip()
-                            else:
-                                print(f"[Step3] Warning: Unexpected content type for {file_name}")
-                                response = str(content_item)
-                        else:
-                            print(f"[Step3] Warning: No content in response for {file_name}")
-                            response = ""
-                        
-                        # Print token usage if available and accumulate totals
-                        if result.content and len(result.content) > 1:
-                            token_usage_item = result.content[1]
-                            if hasattr(token_usage_item, 'type') and token_usage_item.type == 'text' and hasattr(token_usage_item, 'text'):
-                                print(f"[Step3] {token_usage_item.text}")
-                                usage_str = token_usage_item.text.replace("Token usage: ", "").strip()
-                                print(f"[DEBUG] Raw usage_str: {usage_str}")
-                                if usage_str and usage_str != "unavailable":
-                                    try:
-                                        # Try to extract numbers using regex for CompletionUsage object
-                                        prompt_match = re.search(r'prompt_tokens=(\d+)', usage_str)
-                                        completion_match = re.search(r'completion_tokens=(\d+)', usage_str)
-                                        total_match = re.search(r'total_tokens=(\d+)', usage_str)
-                                        usage_dict = {}
-                                        if prompt_match:
-                                            usage_dict['prompt_tokens'] = int(prompt_match.group(1))
-                                        if completion_match:
-                                            usage_dict['completion_tokens'] = int(completion_match.group(1))
-                                        if total_match:
-                                            usage_dict['total_tokens'] = int(total_match.group(1))
-                                        print(f"[DEBUG] Parsed usage_dict: {usage_dict}")
-                                        total_prompt_tokens += usage_dict.get('prompt_tokens', 0)
-                                        total_completion_tokens += usage_dict.get('completion_tokens', 0)
-                                        total_tokens += usage_dict.get('total_tokens', 0)
-                                    except Exception as e:
-                                        print(f"[Step3] Warning: Could not parse token usage for {file_name}: {e}")
-
-                        # Extract changes - look for changes both inside and outside <think> block
-                        changes = ""
-                        
-                        # First try to find changes outside <think> block
-                        # Look for changes that end before any code block starts
-                        changes_match = re.search(r"### Changes:\n([\s\S]*?)(?=\n```[a-zA-Z0-9]*\n|### Updated Code:|$)", response, re.IGNORECASE)
-                        if changes_match:
-                            changes = changes_match.group(1).strip()
-                        else:
-                            # If not found outside, look inside <think> block
-                            think_match = re.search(r"<think>([\s\S]*?)</think>", response, re.IGNORECASE)
-                            if think_match:
-                                think_content = think_match.group(1)
-                                changes_match = re.search(r"### Changes:\n([\s\S]*?)(?=\n```[a-zA-Z0-9]*\n|### Updated Code:|$)", think_content, re.IGNORECASE)
-                                if changes_match:
-                                    changes = changes_match.group(1).strip()
-
-                        # Fallback: If changes section contains code blocks, extract only the text parts
-                        if changes and "```" in changes:
-                            print(f"⚠️ WARNING: Code blocks found in changes section for {file_name}. Attempting to clean up...")
-                            # Remove code blocks from changes
-                            changes = re.sub(r'```[a-zA-Z0-9]*\n[\s\S]*?```', '', changes)
-                            changes = re.sub(r'\n\s*\n', '\n', changes)  # Clean up extra newlines
-                            changes = changes.strip()
-
-                        # Extract updated code - try multiple patterns
-                        updated_code = ""
-                        
-                        # Pattern 1: Look for code specifically after "### Updated Code:" (most specific)
-                        updated_code_match = re.search(r"### Updated Code:\s*\n```[a-zA-Z0-9]*\n([\s\S]*?)```", response, re.IGNORECASE)
-                        if updated_code_match:
-                            updated_code = updated_code_match.group(1).strip()
-                        
-                        # Pattern 2: If not found, look for code inside <think> block after "### Updated Code:"
-                        if not updated_code:
-                            think_match = re.search(r"<think>([\s\S]*?)</think>", response, re.IGNORECASE)
-                            if think_match:
-                                think_content = think_match.group(1)
-                                # Look specifically for "### Updated Code:" inside think content
-                                updated_code_match = re.search(r"### Updated Code:\s*\n```[a-zA-Z0-9]*\n([\s\S]*?)```", think_content, re.IGNORECASE)
-                                if updated_code_match:
-                                    updated_code = updated_code_match.group(1).strip()
-                        
-                        # Pattern 3: If still not found, look for any code block after "### Updated Code:" anywhere in response
-                        if not updated_code:
-                            # Find all occurrences of "### Updated Code:" and take the last one
-                            updated_code_sections = re.findall(r"### Updated Code:\s*\n```[a-zA-Z0-9]*\n([\s\S]*?)```", response, re.IGNORECASE)
-                            if updated_code_sections:
-                                # Take the last occurrence (most likely the final answer)
-                                updated_code = updated_code_sections[-1].strip()
-                        
-                        # Pattern 4: Look for code blocks that come directly after changes section (when LLM doesn't use proper heading)
-                        if not updated_code:
-                            # Find the end of changes section and look for code blocks after it
-                            changes_end = re.search(r"### Changes:\n([\s\S]*?)(?=\n```[a-zA-Z0-9]*\n|### Updated Code:|$)", response, re.IGNORECASE)
-                            if changes_end:
-                                # Get everything after the changes section
-                                after_changes = response[changes_end.end():]
-                                # Look for code blocks in the remaining content
-                                code_blocks = re.findall(r"```[a-zA-Z0-9]*\n([\s\S]*?)```", after_changes)
-                                if code_blocks:
-                                    updated_code = code_blocks[0].strip()  # Take the first code block after changes
-                        
-                        # Pattern 5: Last resort - if multiple code blocks exist, take the last one that's not the original
-                        if not updated_code:
-                            all_code_blocks = re.findall(r"```[a-zA-Z0-9]*\n([\s\S]*?)```", response)
-                            if len(all_code_blocks) > 1:
-                                # Skip the first code block (likely the original) and take the last one
-                                updated_code = all_code_blocks[-1].strip()
-                            elif len(all_code_blocks) == 1:
-                                # Only one code block found, use it
-                                updated_code = all_code_blocks[0].strip()
-
-                        # Clean up the extracted code
-                        if updated_code:
-                            # Remove any leading/trailing whitespace and common prefixes
-                            updated_code = re.sub(r'^[\s\n]*', '', updated_code)
-                            updated_code = re.sub(r'[\s\n]*$', '', updated_code)
-                            
-                            # Remove diff markers and extract only the REPLACE section
-                            if '<<<<<<< SEARCH' in updated_code and '>>>>>>> REPLACE' in updated_code:
-                                # Extract only the REPLACE section
-                                replace_match = re.search(r'=======\n(.*?)\n>>>>>>> REPLACE', updated_code, re.DOTALL)
-                                if replace_match:
-                                    updated_code = replace_match.group(1).strip()
-                            
-                            # Remove any remaining diff markers
-                            updated_code = re.sub(r'<<<<<<< SEARCH.*?=======\n', '', updated_code, flags=re.DOTALL)
-                            updated_code = re.sub(r'\n>>>>>>> REPLACE.*', '', updated_code, flags=re.DOTALL)
-                            
-                            # Clean up any remaining artifacts
-                            updated_code = re.sub(r'client/src/.*?\.js\n```javascript\n', '', updated_code)
-                            updated_code = re.sub(r'```\n$', '', updated_code)
-
-                        # Fallback: if no updated code found, use original code
-                        if not updated_code:
-                            print(f"⚠️ WARNING: Could not extract updated code for {file_name}. Using original code.")
-                            updated_code = old_code
-
-                        regenerated[file_name] = {
-                            "old_code": old_code,
-                            "changes": changes,
-                            "updated_code": updated_code
-                        }
-                        
-                        print(f"[Step3] Successfully processed {file_name}")
-                        
-                    except Exception as e:
-                        print(f"[Step3] Error processing file {file_name}: {e}")
-                        # Add the file with original code as fallback
-                        regenerated[file_name] = {
-                            "old_code": old_code,
-                            "changes": f"Error during processing: {str(e)}",
-                            "updated_code": old_code
-                        }
-                        continue
-
-        # After all files processed, print total token usage
+        # Print final token usage and pricing
         print(f"[Step3] TOTAL TOKEN USAGE: prompt_tokens={total_prompt_tokens}, completion_tokens={total_completion_tokens}, total_tokens={total_tokens}")
-        # Calculate and print total API price for OpenAI GPT-4.1 Mini (as of 2024)
-        # Pricing: $0.42 per 1M input tokens ($0.00042 per 1K), $1.68 per 1M output tokens ($0.00168 per 1K)
+        
+        # Calculate and print total API price for OpenAI GPT-4.1 Mini
         input_price = (total_prompt_tokens / 1000) * 0.00042
         output_price = (total_completion_tokens / 1000) * 0.00168
         total_price = input_price + output_price
