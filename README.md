@@ -424,5 +424,4 @@ workspace_dir = f"{repo_name}_PR{pr_number}"          # Per-PR isolation
 ### **Token Usage & Costs**
 - **Input**: ~$0.42 per 1M tokens (prompts + context)
 - **Output**: ~$1.68 per 1M tokens (AI responses)
-- **Typical PR**: 10-50 files, $0.10-$5.00 per processing run
 
