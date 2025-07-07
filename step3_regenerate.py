@@ -8,124 +8,217 @@ from mcp import ClientSession
 from mcp.client.stdio import stdio_client
 from mcp import StdioServerParameters
 from dotenv import load_dotenv
-from github_mcp_client import create_github_client
+# Removed MCP client - using direct GitHub API only
 try:
     from git import Repo  # type: ignore
 except ImportError:
     print("GitPython not installed. Run: pip install GitPython")
     Repo = None
 
+# Direct GitHub API (primary method)
+try:
+    from github import Github
+except ImportError:
+    print("❌ PyGithub not installed. Install with: pip install PyGithub")
+    exit(1)
+
 load_dotenv()
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
-# Initialize GitHub MCP client
-github_client = create_github_client()
+if not GITHUB_TOKEN:
+    print("❌ GITHUB_TOKEN environment variable not set")
+    exit(1)
+
+# Initialize direct GitHub client
+github_direct = Github(GITHUB_TOKEN)
+print(f"[DEBUG] ✅ GitHub API client initialized")
 
 MAX_CONTEXT_CHARS = 4000000  # GPT-4.1 Mini has 1M+ token context window (1M tokens ≈ 4M chars)
 
 def get_pr_by_number(repo_name: str, pr_number: int):
-    return github_client.get_pr_by_number(repo_name, pr_number)
+    """Get PR by number using direct GitHub API"""
+    print(f"[DEBUG] Getting PR #{pr_number} from {repo_name} using direct GitHub API...")
+    
+    if not github_direct:
+        return {"error": "GitHub API not available"}
+    
+    try:
+        repo = github_direct.get_repo(repo_name)
+        pr = repo.get_pull(pr_number)
+        result = {
+            "number": pr.number,
+            "title": pr.title,
+            "state": pr.state,
+            "head": {
+                "ref": pr.head.ref if pr.head else None,  # type: ignore
+                "sha": pr.head.sha if pr.head else None   # type: ignore
+            },
+            "base": {
+                "ref": pr.base.ref if pr.base else None,  # type: ignore
+                "sha": pr.base.sha if pr.base else None   # type: ignore
+            },
+            "user": pr.user.login if pr.user else None,
+            "created_at": pr.created_at.isoformat() if pr.created_at else None,
+            "updated_at": pr.updated_at.isoformat() if pr.updated_at else None,
+            "mergeable": pr.mergeable,
+            "mergeable_state": pr.mergeable_state
+        }
+        print(f"[DEBUG] Successfully got PR #{pr.number}: {pr.title}")
+        return result
+    except Exception as e:
+        print(f"[DEBUG] Error getting PR: {e}")
+        return {"error": str(e)}
+
+
 
 def collect_files_for_refinement(repo_name: str, pr_number: int, pr_info=None) -> Dict[str, str]:
     """
-    Collect all files in the PR for refinement.
+    Collect all files in the PR for refinement using direct GitHub API.
     """
     print(f"[DEBUG] Starting collect_files_for_refinement for {repo_name} PR #{pr_number}")
+    print(f"[DEBUG] Using direct GitHub API...")
     
-    # Get PR files through MCP
-    print(f"[DEBUG] Getting PR files...")
-    pr_files = github_client.get_pr_files(repo_name, pr_number)
-    if isinstance(pr_files, dict) and pr_files.get("error"):
-        print(f"Error getting PR files: {pr_files.get('error', 'Unknown error')}")
+    if not github_direct:
+        print(f"[DEBUG] Direct GitHub API not available")
         return {}
     
-    print(f"[DEBUG] Got {len(pr_files)} PR files")
-    file_names: Set[str] = set()
-    
-    for file in pr_files:
-        # Skip lock files in any directory
-        if file["filename"].endswith("package-lock.json") or file["filename"].endswith("package.lock.json"):
-            print(f"[DEBUG] Skipping lock file: {file['filename']}")
-            continue
-        # Skip GitHub workflow and config files
-        if file["filename"].startswith('.github/'):
-            print(f"[DEBUG] Skipping GitHub workflow or config file: {file['filename']}")
-            continue
-        file_names.add(file["filename"])
+    try:
+        # Get PR using direct GitHub API
+        repo = github_direct.get_repo(repo_name)
+        pr = repo.get_pull(pr_number)
+        
+        print(f"[DEBUG] Got PR #{pr.number}: {pr.title}")
+        
+        # Get PR files
+        pr_files = []
+        for file in pr.get_files():
+            pr_files.append({
+                "filename": file.filename,
+                "status": file.status,
+                "additions": file.additions,
+                "deletions": file.deletions,
+                "changes": file.changes
+            })
+            
+        print(f"[DEBUG] Got {len(pr_files)} PR files")
+        
+        # Filter files
+        file_names: Set[str] = set()
+        for file in pr_files:
+            # Skip lock files in any directory
+            if file["filename"].endswith("package-lock.json") or file["filename"].endswith("package.lock.json"):
+                print(f"[DEBUG] Skipping lock file: {file['filename']}")
+                continue
+            # Skip GitHub workflow and config files
+            if file["filename"].startswith('.github/'):
+                print(f"[DEBUG] Skipping GitHub workflow or config file: {file['filename']}")
+                continue
+            file_names.add(file["filename"])
 
-    print(f"[DEBUG] File names to process: {file_names}")
-    result = {}
-    ref = pr_info.get("pr_branch", "main") if pr_info else "main"
-    
-    for file_name in file_names:
-        try:
-            print(f"[DEBUG] Getting content for {file_name}...")
-            content = github_client.get_file_content(repo_name, file_name, ref=ref)
-            if "error" not in content:
-                result[file_name] = content["content"]
-                print(f"[DEBUG] Successfully got content for {file_name}")
-            else:
-                print(f"Error reading file {file_name}: {content['error']}")
-        except Exception as e:
-            print(f"Error reading file {file_name}: {e}")
-            continue
+        print(f"[DEBUG] File names to process: {file_names}")
+        
+        # Get file contents
+        result = {}
+        ref = pr_info.get("pr_branch", pr.head.ref) if pr_info else pr.head.ref  # type: ignore
+        
+        for file_name in file_names:
+            try:
+                print(f"[DEBUG] Getting content for {file_name}...")
+                # Get file content from the PR branch
+                file_content = repo.get_contents(file_name, ref=ref)
+                
+                # Handle both single file and list of files
+                if isinstance(file_content, list):
+                    # If it's a directory, skip it
+                    print(f"[DEBUG] Skipping directory {file_name}")
+                    continue
+                else:
+                    # Single file
+                    content = file_content.decoded_content.decode('utf-8')
+                    result[file_name] = content
+                    print(f"[DEBUG] Successfully got content for {file_name}")
+            except Exception as e:
+                print(f"[DEBUG] Error reading file {file_name}: {e}")
+                continue
 
-    print(f"[DEBUG] Returning {len(result)} files")
-    return result
+        print(f"[DEBUG] Returning {len(result)} files")
+        return result
+        
+    except Exception as e:
+        print(f"[DEBUG] Direct API failed: {e}")
+        return {}
 
 def fetch_repo_context(repo_name: str, pr_number: int, target_file: str, pr_info=None) -> str:
     context = ""
     total_chars = 0
 
-    # Get PR files through MCP
-    pr_files = github_client.get_pr_files(repo_name, pr_number)
-    if isinstance(pr_files, dict) and pr_files.get("error"):
-        print(f"Error getting PR files: {pr_files.get('error', 'Unknown error')}")
+    if not github_direct:
+        print(f"[DEBUG] Direct GitHub API not available for context")
         return ""
-    
-    ref = pr_info.get("pr_branch", "main") if pr_info else "main"
-    
-    for file in pr_files:
-        if file["filename"] == target_file:
-            continue
-        # Skip lock files in any directory
-        if file["filename"].endswith("package-lock.json") or file["filename"].endswith("package.lock.json"):
-            continue
-        # Skip GitHub workflow and config files
-        if file["filename"].startswith('.github/'):
-            continue
-        try:
-            content = github_client.get_file_content(repo_name, file["filename"], ref=ref)
-            if "error" in content:
-                print(f"Error reading file {file['filename']}: {content['error']}")
+
+    try:
+        # Get PR files through direct GitHub API
+        repo = github_direct.get_repo(repo_name)
+        pr = repo.get_pull(pr_number)
+        
+        ref = pr_info.get("pr_branch", pr.head.ref) if pr_info else pr.head.ref  # type: ignore
+        
+        for file in pr.get_files():
+            if file.filename == target_file:
                 continue
-            
-            # Get the FULL file content
-            full_content = content["content"]
-            file_size = len(full_content)
-            
-            section = f"\n// File: {file['filename']} ({file_size} chars)\n{full_content}\n"
-            
-            # Still keep a reasonable limit to avoid overwhelming the model
-            if total_chars + len(section) > MAX_CONTEXT_CHARS:
-                break
+            # Skip lock files in any directory
+            if file.filename.endswith("package-lock.json") or file.filename.endswith("package.lock.json"):
+                continue
+            # Skip GitHub workflow and config files
+            if file.filename.startswith('.github/'):
+                continue
+            try:
+                file_content = repo.get_contents(file.filename, ref=ref)
                 
-            context += section
-            total_chars += len(section)
-            
-        except Exception as e:
-            print(f"Error reading file {file['filename']}: {e}")
-            continue
+                # Handle both single file and list of files
+                if isinstance(file_content, list):
+                    continue  # Skip directories
+                
+                # Get the FULL file content
+                full_content = file_content.decoded_content.decode('utf-8')
+                file_size = len(full_content)
+                
+                section = f"\n// File: {file.filename} ({file_size} chars)\n{full_content}\n"
+                
+                # Still keep a reasonable limit to avoid overwhelming the model
+                if total_chars + len(section) > MAX_CONTEXT_CHARS:
+                    break
+                    
+                context += section
+                total_chars += len(section)
+                
+            except Exception as e:
+                print(f"Error reading file {file.filename}: {e}")
+                continue
+                
+    except Exception as e:
+        print(f"Error getting PR context: {e}")
+        return ""
+        
     return context
 
 def fetch_requirements_from_readme(repo_name: str, branch: str) -> str:
+    if not github_direct:
+        print(f"[DEBUG] Direct GitHub API not available for README")
+        return "# No README found\n\nPlease provide coding standards and requirements."
+    
     try:
-        content = github_client.get_file_content(repo_name, "README.md", ref=branch)
-        if "error" not in content:
-            return content["content"]
-        else:
-            print(f"Error reading README.md: {content['error']}")
+        repo = github_direct.get_repo(repo_name)
+        file_content = repo.get_contents("README.md", ref=branch)
+        
+        if isinstance(file_content, list):
+            print(f"README.md is a directory, not a file")
             return "# No README found\n\nPlease provide coding standards and requirements."
+        
+        content = file_content.decoded_content.decode('utf-8')
+        print(f"[DEBUG] Successfully read README.md ({len(content)} chars)")
+        return content
+        
     except Exception as e:
         print(f"Error reading README.md: {e}")
         return "# No README found\n\nPlease provide coding standards and requirements."
@@ -473,49 +566,65 @@ def process_pr_with_local_repo(pr_info, regenerated_files):
             
             print(f"[LocalRepo] ✓ Applied LLM changes to {file_path}")
         
-        # Generate lockfile if package.json was changed
-        if "package.json" in regenerated_files:
-            print("[LocalRepo] package.json detected, running npm install to generate lockfile...")
+        # Generate lockfile if any package.json was changed (check for files ending with package.json)
+        package_json_files = [f for f in regenerated_files.keys() if f.endswith("package.json")]
+        
+        if package_json_files:
+            print(f"[LocalRepo] package.json files detected: {package_json_files}")
             
-            try:
-                # Run npm install
-                result = subprocess.run(
-                    ["npm", "install"],
-                    cwd=repo_path,
-                    capture_output=True,
-                    text=True,
-                    timeout=300  # 5 minute timeout
-                )
+            # Process each package.json file
+            for package_file in package_json_files:
+                # Get the directory containing the package.json
+                package_dir = os.path.dirname(package_file) if os.path.dirname(package_file) else "."
+                package_dir_path = os.path.join(repo_path, package_dir)
                 
-                if result.returncode == 0:
-                    print("[LocalRepo] ✓ npm install completed successfully")
+                print(f"[LocalRepo] Running npm install in directory: {package_dir_path}")
+                
+                try:
+                    # Run npm install in the correct directory
+                    result = subprocess.run(
+                        ["npm", "install", "--legacy-peer-deps"],
+                        cwd=package_dir_path,
+                        capture_output=True,
+                        text=True,
+                        timeout=300  # 5 minute timeout
+                    )
                     
-                    # Read the newly generated package-lock.json
-                    lockfile_path = os.path.join(repo_path, "package-lock.json")
-                    if os.path.exists(lockfile_path):
-                        with open(lockfile_path, "r", encoding="utf-8") as f:
-                            lockfile_content = f.read()
+                    if result.returncode == 0:
+                        print(f"[LocalRepo] ✓ npm install completed successfully in {package_dir}")
                         
-                        # Add the lockfile to regenerated_files for GitHub API push
-                        regenerated_files["package-lock.json"] = {
-                            "old_code": "",  # Could fetch existing lockfile from GitHub if needed
-                            "changes": "Regenerated lockfile after package.json update via npm install",
-                            "updated_code": lockfile_content
-                        }
-                        print("[LocalRepo] ✓ Generated and added package-lock.json to commit")
+                        # Determine lockfile path relative to the package.json location
+                        if package_dir == ".":
+                            lockfile_relative_path = "package-lock.json"
+                        else:
+                            lockfile_relative_path = os.path.join(package_dir, "package-lock.json")
+                        
+                        lockfile_absolute_path = os.path.join(repo_path, lockfile_relative_path)
+                        
+                        if os.path.exists(lockfile_absolute_path):
+                            with open(lockfile_absolute_path, "r", encoding="utf-8") as f:
+                                lockfile_content = f.read()
+                            
+                            # Add the lockfile to regenerated_files for GitHub API push
+                            regenerated_files[lockfile_relative_path] = {
+                                "old_code": "",  # Could fetch existing lockfile from GitHub if needed
+                                "changes": f"Regenerated lockfile after {package_file} update via npm install",
+                                "updated_code": lockfile_content
+                            }
+                            print(f"[LocalRepo] ✓ Generated and added {lockfile_relative_path} to commit")
+                        else:
+                            print(f"[LocalRepo] ⚠️ Warning: package-lock.json not generated by npm install in {package_dir}")
                     else:
-                        print("[LocalRepo] ⚠️ Warning: package-lock.json not generated by npm install")
-                else:
-                    print(f"[LocalRepo] ❌ npm install failed with return code {result.returncode}")
-                    print(f"[LocalRepo] stdout: {result.stdout}")
-                    print(f"[LocalRepo] stderr: {result.stderr}")
-            
-            except subprocess.TimeoutExpired:
-                print("[LocalRepo] ❌ npm install timed out after 5 minutes")
-            except FileNotFoundError:
-                print("[LocalRepo] ❌ npm not found. Please ensure Node.js and npm are installed.")
-            except Exception as e:
-                print(f"[LocalRepo] ❌ Error during npm install: {e}")
+                        print(f"[LocalRepo] ❌ npm install failed with return code {result.returncode} in {package_dir}")
+                        print(f"[LocalRepo] stdout: {result.stdout}")
+                        print(f"[LocalRepo] stderr: {result.stderr}")
+                
+                except subprocess.TimeoutExpired:
+                    print(f"[LocalRepo] ❌ npm install timed out after 5 minutes in {package_dir}")
+                except FileNotFoundError:
+                    print("[LocalRepo] ❌ npm not found. Please ensure Node.js and npm are installed.")
+                except Exception as e:
+                    print(f"[LocalRepo] ❌ Error during npm install in {package_dir}: {e}")
         
         # TODO: Future user story - Generate and run tests here
         # print("[LocalRepo] Preparing for test generation and execution...")
@@ -547,7 +656,7 @@ def regenerate_files(pr_info):
         return None
     
     print(f"Loaded PR #{pr['number']}: {pr['title']}")
-    print(f"Branch: {pr['head']['ref']}")
+    print(f"Branch: {pr['head']['ref']}")  # type: ignore
     print("Processing all files in the PR")
 
     files_for_update = collect_files_for_refinement(REPO_NAME, PR_NUMBER, pr_info)
@@ -557,7 +666,7 @@ def regenerate_files(pr_info):
         print("No files found for refinement. Exiting.")
         return None
 
-    requirements_text = fetch_requirements_from_readme(REPO_NAME, pr['head']['ref'])
+    requirements_text = fetch_requirements_from_readme(REPO_NAME, pr['head']['ref'])  # type: ignore
     print(f"Requirements from README.md:\n{'-'*60}\n{requirements_text}\n{'-'*60}")
 
     regenerated_files = asyncio.run(regenerate_code_with_mcp(files_for_update, requirements_text, pr, pr_info))

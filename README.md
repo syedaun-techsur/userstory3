@@ -71,15 +71,15 @@ pr_info = {
 
 ---
 
-### **2. Step 3: AI Processing + Local Validation**
+### **2. Step 3: AI Processing + Local Validation (GitHub API)**
 
 #### **2.1 File Collection**
 **Function**: `regenerate_files(pr_info)` → `collect_files_for_refinement(repo_name, pr_number, pr_info)`
 
 **Process**:
-- Gets all changed files in PR via GitHub API
-- Filters out lock files (`package-lock.json`) and `.github/` files
-- Fetches file content from PR branch
+- Gets all changed files in PR via direct GitHub API (`repo.get_pull().get_files()`)
+- Filters out lock files (`package-lock.json`) and `.github/` files  
+- Fetches file content from PR branch via GitHub API (`repo.get_contents()`)
 
 **Returns**:
 ```python

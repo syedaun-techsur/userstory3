@@ -27,7 +27,7 @@ class GitHubMCPClient:
                 await session.initialize()
                 result = await asyncio.wait_for(
                     session.call_tool(tool_name, arguments),
-                    timeout=30  # 30 second timeout
+                    timeout=120  # 2 minute timeout for large PRs
                 )
                 # MCP returns content as a list of TextContent objects
                 if result.content and len(result.content) > 0:
@@ -65,7 +65,7 @@ class GitHubMCPClient:
                 # Run in a thread with a new event loop
                 with concurrent.futures.ThreadPoolExecutor() as executor:
                     future = executor.submit(run_in_new_loop)
-                    return future.result(timeout=35)  # 35 second timeout (5 more than tool timeout)
+                    return future.result(timeout=125)  # 125 second timeout (5 more than tool timeout)
                     
             except RuntimeError:
                 # No event loop running, safe to use asyncio.run()
@@ -106,14 +106,17 @@ class GitHubMCPClient:
     
     def get_pr_files(self, repo_name: str, pr_number: int) -> List[Dict[str, Any]]:
         """Get files changed in a pull request"""
+        print(f"[MCP Client] Getting PR files for {repo_name} PR #{pr_number}...")
         result = self.call_tool_sync("get_pr_files", {
             "repo_name": repo_name,
             "pr_number": pr_number
         })
         if isinstance(result, list):
+            print(f"[MCP Client] Successfully retrieved {len(result)} PR files")
             return result
         else:
-            print(f"Error getting PR files: {result}")
+            print(f"[MCP Client] Error getting PR files: {result}")
+            # Return empty list instead of failing completely
             return []
     
     def get_pr_comments(self, repo_name: str, pr_number: int) -> List[Dict[str, Any]]:
