@@ -8,19 +8,15 @@ from mcp import ClientSession
 from mcp.client.stdio import stdio_client
 from mcp import StdioServerParameters
 from dotenv import load_dotenv
-# Removed MCP client - using direct GitHub API only
+# Use MCP client for GitHub API access
 try:
     from git import Repo  # type: ignore
 except ImportError:
     print("GitPython not installed. Run: pip install GitPython")
     Repo = None
 
-# Direct GitHub API (primary method)
-try:
-    from github import Github
-except ImportError:
-    print("❌ PyGithub not installed. Install with: pip install PyGithub")
-    exit(1)
+# GitHub MCP Client (primary method)
+from github_mcp_client import create_github_client
 
 load_dotenv()
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
@@ -29,41 +25,23 @@ if not GITHUB_TOKEN:
     print("❌ GITHUB_TOKEN environment variable not set")
     exit(1)
 
-# Initialize direct GitHub client
-github_direct = Github(GITHUB_TOKEN)
-print(f"[DEBUG] ✅ GitHub API client initialized")
+# Initialize GitHub MCP client
+github_client = create_github_client(timeout=600)  # 10 minute timeout for large operations
+print(f"[DEBUG] ✅ GitHub MCP client initialized")
 
 MAX_CONTEXT_CHARS = 4000000  # GPT-4.1 Mini has 1M+ token context window (1M tokens ≈ 4M chars)
 
 def get_pr_by_number(repo_name: str, pr_number: int):
-    """Get PR by number using direct GitHub API"""
-    print(f"[DEBUG] Getting PR #{pr_number} from {repo_name} using direct GitHub API...")
-    
-    if not github_direct:
-        return {"error": "GitHub API not available"}
+    """Get PR by number using GitHub MCP client"""
+    print(f"[DEBUG] Getting PR #{pr_number} from {repo_name} using GitHub MCP client...")
     
     try:
-        repo = github_direct.get_repo(repo_name)
-        pr = repo.get_pull(pr_number)
-        result = {
-            "number": pr.number,
-            "title": pr.title,
-            "state": pr.state,
-            "head": {
-                "ref": pr.head.ref if pr.head else None,  # type: ignore
-                "sha": pr.head.sha if pr.head else None   # type: ignore
-            },
-            "base": {
-                "ref": pr.base.ref if pr.base else None,  # type: ignore
-                "sha": pr.base.sha if pr.base else None   # type: ignore
-            },
-            "user": pr.user.login if pr.user else None,
-            "created_at": pr.created_at.isoformat() if pr.created_at else None,
-            "updated_at": pr.updated_at.isoformat() if pr.updated_at else None,
-            "mergeable": pr.mergeable,
-            "mergeable_state": pr.mergeable_state
-        }
-        print(f"[DEBUG] Successfully got PR #{pr.number}: {pr.title}")
+        result = github_client.get_pr_by_number(repo_name, pr_number)
+        if "error" in result:
+            print(f"[DEBUG] Error getting PR: {result['error']}")
+            return result
+        
+        print(f"[DEBUG] Successfully got PR #{result['number']}: {result['title']}")
         return result
     except Exception as e:
         print(f"[DEBUG] Error getting PR: {e}")
@@ -73,32 +51,17 @@ def get_pr_by_number(repo_name: str, pr_number: int):
 
 def collect_files_for_refinement(repo_name: str, pr_number: int, pr_info=None) -> Dict[str, str]:
     """
-    Collect all files in the PR for refinement using direct GitHub API.
+    Collect all files in the PR for refinement using GitHub MCP client.
     """
     print(f"[DEBUG] Starting collect_files_for_refinement for {repo_name} PR #{pr_number}")
-    print(f"[DEBUG] Using direct GitHub API...")
-    
-    if not github_direct:
-        print(f"[DEBUG] Direct GitHub API not available")
-        return {}
+    print(f"[DEBUG] Using GitHub MCP client...")
     
     try:
-        # Get PR using direct GitHub API
-        repo = github_direct.get_repo(repo_name)
-        pr = repo.get_pull(pr_number)
-        
-        print(f"[DEBUG] Got PR #{pr.number}: {pr.title}")
-        
-        # Get PR files
-        pr_files = []
-        for file in pr.get_files():
-            pr_files.append({
-                "filename": file.filename,
-                "status": file.status,
-                "additions": file.additions,
-                "deletions": file.deletions,
-                "changes": file.changes
-            })
+        # Get PR files using MCP client
+        pr_files = github_client.get_pr_files(repo_name, pr_number)
+        if not pr_files:
+            print(f"[DEBUG] No PR files found")
+            return {}
             
         print(f"[DEBUG] Got {len(pr_files)} PR files")
         
@@ -119,24 +82,24 @@ def collect_files_for_refinement(repo_name: str, pr_number: int, pr_info=None) -
         
         # Get file contents
         result = {}
-        ref = pr_info.get("pr_branch", pr.head.ref) if pr_info else pr.head.ref  # type: ignore
+        ref = pr_info.get("pr_branch") if pr_info else "main"  # Default to main if no pr_info
         
         for file_name in file_names:
             try:
                 print(f"[DEBUG] Getting content for {file_name}...")
-                # Get file content from the PR branch
-                file_content = repo.get_contents(file_name, ref=ref)
+                # Get file content from the PR branch using MCP client
+                file_result = github_client.get_file_content(repo_name, file_name, ref=ref)
                 
-                # Handle both single file and list of files
-                if isinstance(file_content, list):
-                    # If it's a directory, skip it
-                    print(f"[DEBUG] Skipping directory {file_name}")
+                if "error" in file_result:
+                    print(f"[DEBUG] Error reading file {file_name}: {file_result['error']}")
                     continue
-                else:
-                    # Single file
-                    content = file_content.decoded_content.decode('utf-8')
-                    result[file_name] = content
+                
+                if "content" in file_result:
+                    result[file_name] = file_result["content"]
                     print(f"[DEBUG] Successfully got content for {file_name}")
+                else:
+                    print(f"[DEBUG] No content found for {file_name}")
+                    
             except Exception as e:
                 print(f"[DEBUG] Error reading file {file_name}: {e}")
                 continue
@@ -145,45 +108,46 @@ def collect_files_for_refinement(repo_name: str, pr_number: int, pr_info=None) -
         return result
         
     except Exception as e:
-        print(f"[DEBUG] Direct API failed: {e}")
+        print(f"[DEBUG] MCP client failed: {e}")
         return {}
 
 def fetch_repo_context(repo_name: str, pr_number: int, target_file: str, pr_info=None) -> str:
     context = ""
     total_chars = 0
 
-    if not github_direct:
-        print(f"[DEBUG] Direct GitHub API not available for context")
-        return ""
-
     try:
-        # Get PR files through direct GitHub API
-        repo = github_direct.get_repo(repo_name)
-        pr = repo.get_pull(pr_number)
+        # Get PR files through MCP client
+        pr_files = github_client.get_pr_files(repo_name, pr_number)
+        if not pr_files:
+            print(f"[DEBUG] No PR files found for context")
+            return ""
         
-        ref = pr_info.get("pr_branch", pr.head.ref) if pr_info else pr.head.ref  # type: ignore
+        ref = pr_info.get("pr_branch") if pr_info else "main"  # Default to main if no pr_info
         
-        for file in pr.get_files():
-            if file.filename == target_file:
+        for file in pr_files:
+            if file["filename"] == target_file:
                 continue
             # Skip lock files in any directory
-            if file.filename.endswith("package-lock.json") or file.filename.endswith("package.lock.json"):
+            if file["filename"].endswith("package-lock.json") or file["filename"].endswith("package.lock.json"):
                 continue
             # Skip GitHub workflow and config files
-            if file.filename.startswith('.github/'):
+            if file["filename"].startswith('.github/'):
                 continue
             try:
-                file_content = repo.get_contents(file.filename, ref=ref)
+                file_result = github_client.get_file_content(repo_name, file["filename"], ref=ref)
                 
-                # Handle both single file and list of files
-                if isinstance(file_content, list):
-                    continue  # Skip directories
+                if "error" in file_result:
+                    print(f"Error reading file {file['filename']}: {file_result['error']}")
+                    continue
+                
+                if "content" not in file_result:
+                    continue  # Skip if no content
                 
                 # Get the FULL file content
-                full_content = file_content.decoded_content.decode('utf-8')
+                full_content = file_result["content"]
                 file_size = len(full_content)
                 
-                section = f"\n// File: {file.filename} ({file_size} chars)\n{full_content}\n"
+                section = f"\n// File: {file['filename']} ({file_size} chars)\n{full_content}\n"
                 
                 # Still keep a reasonable limit to avoid overwhelming the model
                 if total_chars + len(section) > MAX_CONTEXT_CHARS:
@@ -193,29 +157,27 @@ def fetch_repo_context(repo_name: str, pr_number: int, target_file: str, pr_info
                 total_chars += len(section)
                 
             except Exception as e:
-                print(f"Error reading file {file.filename}: {e}")
+                print(f"Error reading file {file['filename']}: {e}")
                 continue
                 
     except Exception as e:
         print(f"Error getting PR context: {e}")
-        return ""
         
     return context
 
 def fetch_requirements_from_readme(repo_name: str, branch: str) -> str:
-    if not github_direct:
-        print(f"[DEBUG] Direct GitHub API not available for README")
-        return "# No README found\n\nPlease provide coding standards and requirements."
-    
     try:
-        repo = github_direct.get_repo(repo_name)
-        file_content = repo.get_contents("README.md", ref=branch)
+        file_result = github_client.get_file_content(repo_name, "README.md", ref=branch)
         
-        if isinstance(file_content, list):
-            print(f"README.md is a directory, not a file")
+        if "error" in file_result:
+            print(f"Error reading README.md: {file_result['error']}")
             return "# No README found\n\nPlease provide coding standards and requirements."
         
-        content = file_content.decoded_content.decode('utf-8')
+        if "content" not in file_result:
+            print(f"No content in README.md")
+            return "# No README found\n\nPlease provide coding standards and requirements."
+        
+        content = file_result["content"]
         print(f"[DEBUG] Successfully read README.md ({len(content)} chars)")
         return content
         
