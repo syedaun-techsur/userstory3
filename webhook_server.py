@@ -8,7 +8,7 @@ from pr_watcher import PRWatcher
 app = Flask(__name__)
 GITHUB_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET")  # Set this in your environment
 
-watcher = PRWatcher()  # You may want to refactor PRWatcher to allow stateless usage
+watcher = PRWatcher()  #
 
 def verify_signature(payload, signature, secret):
     mac = hmac.new(secret.encode(), msg=payload, digestmod=hashlib.sha256)
