@@ -368,16 +368,42 @@ def compose_prompt(requirements: str, code: str, file_name: str, context: str) -
             f"9. ENSURE build tools are in devDependencies (webpack, babel, eslint, etc.)\n"
             f"10. VERIFY peer dependencies are properly handled\n\n"
             f"🚨 CRITICAL: Only include dependencies that are ACTUALLY USED in the context files above.\n"
-            f"Do NOT add speculative or 'might need' dependencies. Be STRICT and PRECISE.\n"
+            f"Do NOT add speculative or 'might need' dependencies. Be STRICT and PRECISE.\n\n"
+            f"📦 DEPENDENCY PHILOSOPHY: More dependencies = More problems\n"
+            f"- Be CONSERVATIVE with adding new dependencies\n"
+            f"- Only add dependencies when absolutely necessary\n"
+            f"- Prefer built-in solutions over external packages when possible\n"
+            f"- Use well-maintained, popular packages over niche alternatives\n"
+            f"- Avoid adding dependencies for features that might be used later\n"
         )
     else:
         dependency_instructions = (
-            f"\n---\n📦 DEPENDENCY REQUIREMENTS:\n"
+            f"\n---\n📦 DEPENDENCY & BUILD ERROR PREVENTION:\n"
             f"For import statements and dependencies:\n"
             f"1. ONLY use dependencies that exist in package.json or are built-in\n"
             f"2. Do NOT add new import statements for packages not already available\n"
             f"3. If you need a new dependency, mention it in the ### Changes section\n"
-            f"4. Prefer using existing dependencies from the context over adding new ones\n"
+            f"4. Prefer using existing dependencies from the context over adding new ones\n\n"
+            f"🚫 PREVENT COMMON BUILD ERRORS:\n"
+            f"1. **Unused Imports**: Remove ALL unused imports (like unused React hooks)\n"
+            f"   - If you import useEffect but don't use it, REMOVE the import\n"
+            f"   - Clean up any imported functions, components, or types that aren't used\n"
+            f"2. **Missing Dependencies**: Ensure all imported modules are available\n"
+            f"   - Check that every import statement has a corresponding dependency\n"
+            f"   - For React Router, ensure 'react-router-dom' is in dependencies\n"
+            f"   - For UI libraries, ensure they're properly listed\n"
+            f"3. **TypeScript Issues**: Fix TypeScript configuration problems\n"
+            f"   - Ensure @types/* packages are available for all external libraries\n"
+            f"   - Remove or fix invalid type references\n"
+            f"   - Use proper TypeScript syntax and type annotations\n"
+            f"4. **File Path Issues**: Use correct relative/absolute paths\n"
+            f"   - Verify all import paths are correct and files exist\n"
+            f"   - Use proper case sensitivity for file names\n\n"
+            f"📦 DEPENDENCY PHILOSOPHY: More dependencies = More problems\n"
+            f"- Be EXTREMELY CONSERVATIVE with suggesting new dependencies\n"
+            f"- Only suggest adding dependencies when absolutely necessary\n"
+            f"- Try to solve problems with existing dependencies first\n"
+            f"- If you must add a dependency, explain why it's essential\n"
         )
     
     format_instructions = (
@@ -741,6 +767,728 @@ def get_persistent_workspace(repo_name, pr_branch, pr_number):
     
     return workspace_dir
 
+async def fix_package_json_with_llm(package_json_content, npm_error, package_file_path, pr_info):
+    """
+    Use LLM to fix package.json based on npm install errors.
+    Returns corrected package.json content or None if correction fails.
+    """
+    if not pr_info:
+        print("[LocalRepo] 🔧 No PR info available for LLM error correction")
+        return None
+    
+    print(f"[LocalRepo] 🤖 Using LLM to fix package.json errors...")
+    
+    # Create error correction prompt
+    error_correction_prompt = f"""You are an expert package.json dependency resolver. An npm install failed with the following error:
+
+---
+NPM INSTALL ERROR:
+{npm_error}
+---
+
+Current package.json content:
+```json
+{package_json_content}
+```
+
+You are fixing package.json dependency issues. The most common npm install errors and their solutions:
+
+1. **"No matching version found for package@version"** - The specified version doesn't exist
+   - Solution: Use a version that actually exists (e.g., ^15.0.0 instead of ^16.3.0)
+   - Check semver ranges carefully - use tilde (~) for patch updates, caret (^) for minor updates
+
+2. **"Package not found"** - Package name is wrong or deprecated
+   - Solution: Fix the package name or find an alternative
+
+3. **"Peer dependency warnings/conflicts"**
+   - Solution: Align versions between packages that depend on each other
+
+4. **"ETARGET" errors** - Version targeting issues
+   - Solution: Use exact versions or valid ranges that exist in npm registry
+
+🔍 **CRITICAL INSTRUCTIONS:**
+1. READ the npm error message VERY CAREFULLY to identify the exact problematic package and version
+2. For "No matching version found" errors: Lower the version number to one that exists
+   - Example: If husky@^9.6.2 fails, try husky@^9.0.6 or husky@^8.0.0
+   - Example: If lint-staged@^16.3.0 fails, try lint-staged@^15.0.0 or lint-staged@^14.0.0
+3. PRESERVE all functionality - don't remove packages unless they're truly unnecessary
+4. Use CONSERVATIVE version ranges - better to be too low than too high
+5. Keep JSON structure clean and valid
+6. ONLY change the packages/versions that are causing the specific error
+
+Return your response in this EXACT format:
+
+### Analysis:
+- Brief explanation of what was wrong and what you fixed
+
+### Fixed package.json:
+```json
+<CORRECTED PACKAGE.JSON CONTENT HERE>
+```
+
+IMPORTANT: Return ONLY the corrected package.json in the code block, not the original."""
+
+    try:
+        # Use the existing MCP infrastructure
+        server_params = StdioServerParameters(command="python", args=["server.py"])
+        
+        async with stdio_client(server_params) as (read_stream, write_stream):
+            async with ClientSession(read_stream, write_stream) as session:
+                await session.initialize()
+                
+                # Call LLM for error correction
+                result = await asyncio.wait_for(
+                    session.call_tool("codegen", arguments={"prompt": error_correction_prompt}),
+                    timeout=120  # 2 minute timeout for error correction
+                )
+                
+                # Extract response
+                response = extract_response_content(result, package_file_path)
+                
+                # Parse the corrected package.json
+                corrected_json = extract_updated_code(response)
+                if corrected_json:
+                    # Validate it's valid JSON
+                    try:
+                        json.loads(corrected_json)
+                        print(f"[LocalRepo] ✅ LLM provided valid package.json correction")
+                        return corrected_json
+                    except json.JSONDecodeError as e:
+                        print(f"[LocalRepo] ❌ LLM correction produced invalid JSON: {e}")
+                        return None
+                else:
+                    print(f"[LocalRepo] ❌ Could not extract corrected package.json from LLM response")
+                    return None
+                    
+    except Exception as e:
+        print(f"[LocalRepo] ❌ Error during LLM package.json correction: {e}")
+        return None
+
+async def fix_build_errors_with_llm(build_error, affected_files, package_dir_path, pr_info):
+    """
+    Use LLM to fix source code files based on npm build errors.
+    Returns dict of corrected files or None if correction fails.
+    """
+    if not pr_info:
+        print("[LocalRepo] 🔧 No PR info available for LLM build error correction")
+        return None
+    
+    print(f"[LocalRepo] 🤖 Using LLM to fix build errors...")
+    
+    # Analyze the build error to identify problematic files
+    affected_file_contents = {}
+    for file_path in affected_files:
+        full_path = os.path.join(package_dir_path, file_path)
+        if os.path.exists(full_path):
+            try:
+                with open(full_path, "r", encoding="utf-8") as f:
+                    affected_file_contents[file_path] = f.read()
+            except Exception as e:
+                print(f"[LocalRepo] ⚠️ Could not read {file_path}: {e}")
+                continue
+    
+    if not affected_file_contents:
+        print("[LocalRepo] ❌ No affected files could be read for build error correction")
+        return None
+    
+    # Create build error correction prompt
+    files_context = ""
+    for file_path, content in affected_file_contents.items():
+        files_context += f"\n\n--- {file_path} ---\n```\n{content}\n```"
+    
+    build_error_correction_prompt = f"""You are an expert TypeScript/JavaScript developer. A build failed with the following error:
+
+---
+BUILD ERROR:
+{build_error}
+---
+
+Affected files that need to be fixed:
+{files_context}
+
+ 🚫 **COMMON BUILD ERRORS AND SOLUTIONS:**
+
+ 1. **Unused Import Errors** (`'X' is declared but its value is never read`)
+    - Solution: Remove the unused import from the import statement
+    - Example: If `useEffect` is imported but not used, remove it from the React import
+
+ 2. **Cannot find module errors** (`Cannot find module 'package-name'`)
+    - Solution: The dependency is missing from package.json or the import path is wrong
+    - Check if the module should be available and fix the import path
+
+ 3. **TypeScript Configuration Errors** (tsconfig.json issues)
+    - **Unknown compiler option**: Remove unsupported options like `noUncheckedSideEffectImports`
+    - **Invalid target values**: Use valid ES targets like 'es2020', 'es2021', 'es2022', 'esnext'
+    - **Missing required options**: Add `"incremental": true` when using `tsBuildInfoFile`
+    - **Type definition errors**: Fix `types` array or add missing @types/* packages
+
+ 4. **TypeScript type definition errors** (`Cannot find type definition file for 'node'`)
+    - Solution: Remove 'node' from types array if @types/node is not installed
+    - Or ensure @types/node is properly listed in package.json devDependencies
+
+ 5. **File path errors** (incorrect relative/absolute paths)
+    - Solution: Fix the import paths to point to existing files
+    - Use correct case sensitivity
+
+📦 **DEPENDENCY PHILOSOPHY: More dependencies = More problems**
+- Be EXTREMELY CONSERVATIVE about suggesting new dependencies
+- Try to fix errors by removing unused code rather than adding dependencies
+- Only suggest adding a dependency if it's absolutely essential
+- Prefer using existing, already-installed dependencies
+
+🔍 **CRITICAL INSTRUCTIONS:**
+1. ANALYZE the build error message carefully to identify the exact problem
+2. FIX only what's broken - don't make unnecessary changes
+3. REMOVE unused imports, variables, and functions causing warnings
+4. ENSURE all imports have corresponding available dependencies
+5. VERIFY file paths are correct and files exist
+6. Do NOT add new dependencies unless absolutely necessary
+7. Keep the functionality intact while fixing the build errors
+
+Return your response in this EXACT format:
+
+### Analysis:
+- Brief explanation of the build errors and how you fixed them
+
+### Fixed Files:
+For each file that needs changes, use this format:
+
+ #### {file_path}
+ ```
+ <CORRECTED FILE CONTENT HERE>
+ ```
+
+IMPORTANT: 
+- Only include files that actually need changes
+- Return the complete corrected file content for each file
+- Do NOT suggest adding new dependencies unless absolutely essential
+- Focus on removing unused code rather than adding new code"""
+
+    try:
+        # Use the existing MCP infrastructure
+        server_params = StdioServerParameters(command="python", args=["server.py"])
+        
+        async with stdio_client(server_params) as (read_stream, write_stream):
+            async with ClientSession(read_stream, write_stream) as session:
+                await session.initialize()
+                
+                # Call LLM for build error correction
+                result = await asyncio.wait_for(
+                    session.call_tool("codegen", arguments={"prompt": build_error_correction_prompt}),
+                    timeout=180  # 3 minute timeout for build error correction
+                )
+                
+                # Extract response
+                response = extract_response_content(result, "build_error_correction")
+                
+                # Parse the corrected files from the response
+                corrected_files = {}
+                
+                # Multiple patterns to try for extracting file corrections
+                patterns = [
+                    # Pattern 1: #### filename with code block
+                    r'#### ([^\n]+)\n```[a-zA-Z0-9]*\n([\s\S]*?)```',
+                    # Pattern 2: #### filename with json code block
+                    r'#### ([^\n]+)\n```json\n([\s\S]*?)```', 
+                    # Pattern 3: ### Fixed Files: with #### subsections
+                    r'### Fixed Files:[\s\S]*?#### ([^\n]+)\n```[a-zA-Z0-9]*\n([\s\S]*?)```',
+                    # Pattern 4: Just look for any filename.json followed by code block
+                    r'([a-zA-Z0-9_./\-]+\.json)\n```[a-zA-Z0-9]*\n([\s\S]*?)```',
+                    # Pattern 5: Filename in quotes or backticks followed by code
+                    r'`([a-zA-Z0-9_./\-]+\.json)`\n```[a-zA-Z0-9]*\n([\s\S]*?)```'
+                ]
+                
+                for pattern in patterns:
+                    file_sections = re.findall(pattern, response, re.IGNORECASE)
+                    
+                    for file_path, file_content in file_sections:
+                        file_path = file_path.strip()
+                        file_content = file_content.strip()
+                        
+                        # Check if this file is one we're trying to fix
+                        if file_path in affected_file_contents:
+                            corrected_files[file_path] = file_content
+                            print(f"[LocalRepo] ✅ LLM provided correction for {file_path}")
+                    
+                    if corrected_files:
+                        break  # Found files with this pattern, stop trying others
+                
+                if corrected_files:
+                    return corrected_files
+                else:
+                    print(f"[LocalRepo] ❌ Could not extract corrected files from LLM response")
+                    print(f"[LocalRepo] 🔍 Response preview: {response[:500]}...")
+                    return None
+                    
+    except Exception as e:
+        print(f"[LocalRepo] ❌ Error during LLM build error correction: {e}")
+        return None
+
+def run_npm_install_with_error_correction(package_dir_path, package_file, repo_path, regenerated_files, pr_info):
+    """
+    Run npm install with intelligent error correction using LLM in a loop.
+    Keeps trying until success or max retries reached.
+    Returns True if successful, False otherwise.
+    """
+    package_dir = os.path.dirname(package_file) if os.path.dirname(package_file) else "."
+    MAX_CORRECTION_ATTEMPTS = 5  # Maximum number of LLM correction attempts
+    
+    def attempt_npm_install():
+        """Helper function to attempt npm install"""
+        try:
+            result = subprocess.run(
+                ["npm", "install", "--legacy-peer-deps"],
+                cwd=package_dir_path,
+                capture_output=True,
+                text=True,
+                timeout=300  # 5 minute timeout
+            )
+            return result
+        except subprocess.TimeoutExpired:
+            print(f"[LocalRepo] ❌ npm install timed out after 5 minutes in {package_dir}")
+            return None
+        except FileNotFoundError:
+            print("[LocalRepo] ❌ npm not found. Please ensure Node.js and npm are installed.")
+            return None
+        except Exception as e:
+            print(f"[LocalRepo] ❌ Error during npm install in {package_dir}: {e}")
+            return None
+
+    def generate_lockfile_if_exists():
+        """Helper function to generate lockfile after successful npm install"""
+        if package_dir == ".":
+            lockfile_relative_path = "package-lock.json"
+        else:
+            lockfile_relative_path = os.path.join(package_dir, "package-lock.json")
+        
+        lockfile_absolute_path = os.path.join(repo_path, lockfile_relative_path)
+        
+        if os.path.exists(lockfile_absolute_path):
+            with open(lockfile_absolute_path, "r", encoding="utf-8") as f:
+                lockfile_content = f.read()
+            
+            # Add the lockfile to regenerated_files for GitHub API push
+            regenerated_files[lockfile_relative_path] = {
+                "old_code": "",
+                "changes": f"Regenerated lockfile after {package_file} update via npm install",
+                "updated_code": lockfile_content
+            }
+            print(f"[LocalRepo] ✅ Generated and added {lockfile_relative_path} to commit")
+        else:
+            print(f"[LocalRepo] ⚠️ Warning: package-lock.json not generated by npm install in {package_dir}")
+
+    # Initial attempt
+    print(f"[LocalRepo] 📦 Attempting npm install in {package_dir_path}")
+    result = attempt_npm_install()
+    
+    if result is None:
+        return False
+    
+    if result.returncode == 0:
+        print(f"[LocalRepo] ✅ npm install completed successfully in {package_dir}")
+        generate_lockfile_if_exists()
+        return True
+    
+    # Start the correction loop
+    print(f"[LocalRepo] 🔄 Starting LLM error correction loop (max {MAX_CORRECTION_ATTEMPTS} attempts)...")
+    
+    original_package_json = None
+    correction_history = []  # Track all corrections applied
+    
+    for attempt in range(1, MAX_CORRECTION_ATTEMPTS + 1):
+        print(f"[LocalRepo] 🤖 LLM Correction Attempt {attempt}/{MAX_CORRECTION_ATTEMPTS}")
+        
+        # Check if result is valid before accessing attributes
+        if result is None:
+            print(f"[LocalRepo] ❌ npm install attempt returned None (timeout/error)")
+            break
+            
+        print(f"[LocalRepo] ❌ npm install failed with return code {result.returncode}")
+        print(f"[LocalRepo] 📄 Error output:")
+        print(f"[LocalRepo] stdout: {result.stdout}")
+        print(f"[LocalRepo] stderr: {result.stderr}")
+        
+        # Get current package.json content
+        package_json_path = os.path.join(package_dir_path, "package.json")
+        try:
+            with open(package_json_path, "r", encoding="utf-8") as f:
+                current_package_json = f.read()
+                
+            # Store original on first correction attempt
+            if original_package_json is None:
+                original_package_json = current_package_json
+                
+        except Exception as e:
+            print(f"[LocalRepo] ❌ Could not read package.json for error correction: {e}")
+            return False
+        
+        # Combine error output for LLM analysis
+        full_error = f"STDOUT:\n{result.stdout}\n\nSTDERR:\n{result.stderr}"
+        
+        # Enhanced prompt with attempt context
+        correction_context = ""
+        if correction_history:
+            correction_context = f"\n\nPREVIOUS CORRECTIONS APPLIED:\n" + "\n".join([f"Attempt {i+1}: {corr}" for i, corr in enumerate(correction_history)])
+        
+        print(f"[LocalRepo] 🤖 Sending error to LLM for analysis...")
+        
+        # Use asyncio to run the async LLM correction
+        try:
+            corrected_package_json = asyncio.run(
+                fix_package_json_with_llm(
+                    current_package_json, 
+                    full_error + correction_context, 
+                    package_file, 
+                    pr_info
+                )
+            )
+        except Exception as e:
+            print(f"[LocalRepo] ❌ Error running LLM correction: {e}")
+            continue  # Try next iteration
+        
+        if not corrected_package_json:
+            print(f"[LocalRepo] ❌ LLM could not provide a valid correction for attempt {attempt}")
+            continue  # Try next iteration
+        
+        # Check if LLM made any actual changes
+        if corrected_package_json.strip() == current_package_json.strip():
+            print(f"[LocalRepo] ⚠️ LLM returned same package.json (no changes) - may be stuck")
+            continue  # Try next iteration
+        
+        # Write corrected package.json back to file
+        try:
+            with open(package_json_path, "w", encoding="utf-8") as f:
+                f.write(corrected_package_json)
+            print(f"[LocalRepo] ✅ Applied LLM correction attempt {attempt}")
+            
+            # Track this correction
+            correction_history.append(f"Fixed dependency issues in npm install")
+            
+        except Exception as e:
+            print(f"[LocalRepo] ❌ Error writing corrected package.json: {e}")
+            continue  # Try next iteration
+        
+        # Retry npm install with corrected package.json
+        print(f"[LocalRepo] 🔄 Retrying npm install with LLM correction {attempt}...")
+        result = attempt_npm_install()
+        
+        if result is None:
+            continue  # Try next iteration
+        
+        if result.returncode == 0:
+            print(f"[LocalRepo] 🎉 npm install succeeded after {attempt} LLM correction(s)!")
+            
+            # Update regenerated_files with the final corrected version
+            correction_summary = f"LLM-corrected package.json after {attempt} iteration(s) to fix npm install failures"
+            regenerated_files[package_file] = {
+                "old_code": original_package_json or current_package_json,
+                "changes": correction_summary,
+                "updated_code": corrected_package_json
+            }
+            
+            generate_lockfile_if_exists()
+            return True
+        
+        # If we get here, this correction didn't work, continue to next attempt
+        print(f"[LocalRepo] ⚠️ npm install still failed after correction {attempt}, trying next iteration...")
+    
+    # All correction attempts exhausted
+    print(f"[LocalRepo] ❌ npm install failed after {MAX_CORRECTION_ATTEMPTS} LLM correction attempts")
+    if result is not None:
+        print(f"[LocalRepo] 📄 Final error output:")
+        print(f"[LocalRepo] stdout: {result.stdout}")
+        print(f"[LocalRepo] stderr: {result.stderr}")
+    else:
+        print(f"[LocalRepo] 📄 Final attempt resulted in timeout/error (no output available)")
+    
+    # Store the final attempted correction even if it failed
+    if original_package_json and correction_history:
+        with open(os.path.join(package_dir_path, "package.json"), "r", encoding="utf-8") as f:
+            final_package_json = f.read()
+        
+        correction_summary = f"LLM attempted {len(correction_history)} correction(s) but npm install still failed"
+        regenerated_files[package_file] = {
+            "old_code": original_package_json,
+            "changes": correction_summary,
+            "updated_code": final_package_json
+        }
+    
+    return False
+
+def run_npm_build_with_error_correction(repo_path, package_json_files, regenerated_files, pr_info):
+    """
+    Run npm build with intelligent error correction using LLM in a loop.
+    Keeps trying until success or max retries reached for each package.
+    Returns build status string.
+    """
+    if not package_json_files:
+        print("[LocalRepo] 🏗️ No package.json files found, skipping npm build validation")
+        return "SKIPPED - No package.json files"
+    
+    print(f"[LocalRepo] 🏗️ Starting npm build validation with intelligent error correction...")
+    
+    build_results = []
+    MAX_BUILD_CORRECTION_ATTEMPTS = 8  # Maximum number of LLM correction attempts per package
+    
+    def attempt_npm_build(package_dir_path):
+        """Helper function to attempt npm build"""
+        try:
+            result = subprocess.run(
+                ["npm", "run", "build"],
+                cwd=package_dir_path,
+                capture_output=True,
+                text=True,
+                timeout=600  # 10 minute timeout for build
+            )
+            return result
+        except subprocess.TimeoutExpired:
+            print(f"[LocalRepo] ❌ npm run build timed out after 10 minutes")
+            return None
+        except FileNotFoundError:
+            print("[LocalRepo] ❌ npm not found for build. Please ensure Node.js and npm are installed.")
+            return None
+        except Exception as e:
+            print(f"[LocalRepo] ❌ Error during npm run build: {e}")
+            return None
+
+    def extract_affected_files_from_error(build_error, package_dir_path):
+        """Extract file paths mentioned in build errors"""
+        affected_files = set()
+        
+        # Common patterns for file paths in TypeScript/JavaScript build errors
+        file_patterns = [
+            r'([a-zA-Z0-9_./\-]+\.(?:ts|tsx|js|jsx|vue|json))\(\d+,\d+\):',  # TypeScript errors: file.ts(1,1): error
+            r'in ([a-zA-Z0-9_./\-]+\.(?:ts|tsx|js|jsx|vue|json))',           # Webpack/build errors: in src/file.ts
+            r'([a-zA-Z0-9_./\-]+\.(?:ts|tsx|js|jsx|vue|json)):\d+:\d+',     # ESLint style: file.ts:1:1
+            r"'([a-zA-Z0-9_./\-]+\.(?:ts|tsx|js|jsx|vue|json))'",           # Quoted file references
+        ]
+        
+        for pattern in file_patterns:
+            matches = re.findall(pattern, build_error)
+            for match in matches:
+                # Convert to relative path from package directory
+                if match.startswith('./') or match.startswith('../'):
+                    affected_files.add(match)
+                elif match.startswith('/'):
+                    # Absolute path - try to make it relative to package dir
+                    try:
+                        rel_path = os.path.relpath(match, package_dir_path)
+                        if not rel_path.startswith('..'):  # Only if it's within the package dir
+                            affected_files.add(rel_path)
+                    except:
+                        pass
+                else:
+                    # Assume it's relative to package root
+                    affected_files.add(match)
+        
+        # Filter to only files that actually exist
+        existing_files = []
+        for file_path in affected_files:
+            full_path = os.path.join(package_dir_path, file_path)
+            if os.path.exists(full_path):
+                existing_files.append(file_path)
+        
+        return existing_files
+    
+    for package_file in package_json_files.keys():
+        # Get the directory containing the package.json
+        package_dir = os.path.dirname(package_file) if os.path.dirname(package_file) else "."
+        package_dir_path = os.path.join(repo_path, package_dir)
+        
+        # Check if build script exists in package.json
+        package_json_path = os.path.join(package_dir_path, "package.json")
+        try:
+            with open(package_json_path, "r", encoding="utf-8") as f:
+                package_data = json.loads(f.read())
+                scripts = package_data.get("scripts", {})
+                
+                if "build" not in scripts:
+                    print(f"[LocalRepo] 🏗️ No 'build' script found in {package_file}, skipping")
+                    build_results.append(f"{package_file}: NO BUILD SCRIPT")
+                    continue
+        except Exception as e:
+            print(f"[LocalRepo] ❌ Error reading {package_file}: {e}")
+            build_results.append(f"{package_file}: READ ERROR")
+            continue
+        
+        print(f"[LocalRepo] 🏗️ Running 'npm run build' in directory: {package_dir_path}")
+        
+        # Initial build attempt
+        result = attempt_npm_build(package_dir_path)
+        
+        if result is None:
+            build_results.append(f"{package_file}: BUILD ERROR")
+            continue
+        
+        if result.returncode == 0:
+            print(f"[LocalRepo] ✅ npm run build completed successfully in {package_dir}")
+            build_results.append(f"{package_file}: SUCCESS")
+            
+            # Check if build generated artifacts (optional - just for logging)
+            build_dir = os.path.join(package_dir_path, "build")
+            dist_dir = os.path.join(package_dir_path, "dist")
+            if os.path.exists(build_dir):
+                print(f"[LocalRepo] 📁 Build artifacts generated in {package_dir}/build/")
+            elif os.path.exists(dist_dir):
+                print(f"[LocalRepo] 📁 Build artifacts generated in {package_dir}/dist/")
+            continue
+        
+        # Build failed - start correction loop
+        print(f"[LocalRepo] 🔄 Starting LLM build error correction loop (max {MAX_BUILD_CORRECTION_ATTEMPTS} attempts)...")
+        
+        correction_history = []  # Track all corrections applied
+        build_success = False
+        
+        for attempt in range(1, MAX_BUILD_CORRECTION_ATTEMPTS + 1):
+            print(f"[LocalRepo] 🤖 LLM Build Correction Attempt {attempt}/{MAX_BUILD_CORRECTION_ATTEMPTS}")
+            
+            if result is None:
+                print(f"[LocalRepo] ❌ npm run build failed (timeout/error)")
+                break
+                
+            print(f"[LocalRepo] ❌ npm run build failed with return code {result.returncode}")
+            print(f"[LocalRepo] 📄 Build error output:")
+            print(f"[LocalRepo] stdout: {result.stdout}")
+            print(f"[LocalRepo] stderr: {result.stderr}")
+            
+            # Combine error output for analysis
+            full_build_error = f"STDOUT:\n{result.stdout}\n\nSTDERR:\n{result.stderr}"
+            
+            # Extract affected files from the error message
+            affected_files = extract_affected_files_from_error(full_build_error, package_dir_path)
+            
+            if not affected_files:
+                print(f"[LocalRepo] ⚠️ Could not identify specific files causing build errors")
+                # Try to guess common problematic files
+                common_files = [
+                    'tsconfig.json', 'tsconfig.app.json', 'tsconfig.node.json',  # TypeScript config files
+                    'src/App.tsx', 'src/App.ts', 'src/index.tsx', 'src/index.ts'  # Source files
+                ]
+                for common_file in common_files:
+                    if os.path.exists(os.path.join(package_dir_path, common_file)):
+                        affected_files.append(common_file)
+                        break
+            
+            if not affected_files:
+                print(f"[LocalRepo] ❌ No files found to correct, skipping LLM correction")
+                break
+            
+            print(f"[LocalRepo] 🎯 Identified affected files: {affected_files}")
+            
+            # Use LLM to fix build errors
+            try:
+                corrected_files = asyncio.run(
+                    fix_build_errors_with_llm(
+                        full_build_error,
+                        affected_files,
+                        package_dir_path,
+                        pr_info
+                    )
+                )
+            except Exception as e:
+                print(f"[LocalRepo] ❌ Error running LLM build correction: {e}")
+                continue  # Try next iteration
+            
+            if not corrected_files:
+                print(f"[LocalRepo] ❌ LLM could not provide valid corrections for attempt {attempt}")
+                continue  # Try next iteration
+            
+            # Apply corrections to files
+            files_changed = 0
+            for file_path, corrected_content in corrected_files.items():
+                full_file_path = os.path.join(package_dir_path, file_path)
+                try:
+                    # Read current content to check if LLM made changes
+                    with open(full_file_path, "r", encoding="utf-8") as f:
+                        current_content = f.read()
+                    
+                    if corrected_content.strip() == current_content.strip():
+                        print(f"[LocalRepo] ⚠️ LLM returned same content for {file_path} (no changes)")
+                        continue
+                    
+                    # Write corrected content
+                    with open(full_file_path, "w", encoding="utf-8") as f:
+                        f.write(corrected_content)
+                    
+                    # Update regenerated_files with the correction
+                    relative_file_path = os.path.join(package_dir, file_path) if package_dir != "." else file_path
+                    regenerated_files[relative_file_path] = {
+                        "old_code": current_content,
+                        "changes": f"LLM-corrected build errors (attempt {attempt})",
+                        "updated_code": corrected_content
+                    }
+                    
+                    files_changed += 1
+                    print(f"[LocalRepo] ✅ Applied LLM correction to {file_path}")
+                    
+                except Exception as e:
+                    print(f"[LocalRepo] ❌ Error writing corrected file {file_path}: {e}")
+                    continue
+            
+            if files_changed == 0:
+                print(f"[LocalRepo] ⚠️ No files were actually changed in attempt {attempt}")
+                continue
+            
+            # Track this correction
+            correction_history.append(f"Fixed {files_changed} files to resolve build errors")
+            
+            # Retry build with corrected files
+            print(f"[LocalRepo] 🔄 Retrying npm run build with LLM corrections {attempt}...")
+            result = attempt_npm_build(package_dir_path)
+            
+            if result is None:
+                continue  # Try next iteration
+            
+            if result.returncode == 0:
+                print(f"[LocalRepo] 🎉 npm run build succeeded after {attempt} LLM correction(s)!")
+                build_results.append(f"{package_file}: SUCCESS (after {attempt} corrections)")
+                build_success = True
+                break
+            
+            # If we get here, this correction didn't work, continue to next attempt
+            print(f"[LocalRepo] ⚠️ npm run build still failed after correction {attempt}, trying next iteration...")
+        
+        # Build loop completed
+        if not build_success:
+            print(f"[LocalRepo] ❌ npm run build failed after {MAX_BUILD_CORRECTION_ATTEMPTS} LLM correction attempts")
+            build_results.append(f"{package_file}: FAILED (after {len(correction_history)} corrections)")
+            if result is not None:
+                print(f"[LocalRepo] 📄 Final build error output:")
+                print(f"[LocalRepo] stdout: {result.stdout}")
+                print(f"[LocalRepo] stderr: {result.stderr}")
+    
+    # Determine overall build status
+    if not build_results:
+        overall_status = "NO BUILDS RUN"
+    elif all("SUCCESS" in result for result in build_results):
+        overall_status = "ALL BUILDS SUCCESSFUL"
+    elif any("SUCCESS" in result for result in build_results):
+        overall_status = "PARTIAL SUCCESS"
+    else:
+        overall_status = "ALL BUILDS FAILED"
+    
+    print(f"[LocalRepo] 🏗️ Build validation summary:")
+    for result in build_results:
+        print(f"[LocalRepo]   - {result}")
+    print(f"[LocalRepo] 🏗️ Overall build status: {overall_status}")
+    
+    # Add build status to regenerated_files metadata (for PR description)
+    build_summary = {
+        "status": overall_status,
+        "details": build_results,
+        "timestamp": "build_validation_with_correction_completed"
+    }
+    
+    # Store build info in a special metadata entry
+    regenerated_files["_build_validation_metadata"] = {
+        "old_code": "",
+        "changes": f"Build validation with LLM error correction: {overall_status}",
+        "updated_code": json.dumps(build_summary, indent=2)
+    }
+    
+    print(f"[LocalRepo] 🏗️ Build validation with error correction completed.")
+    return overall_status
+
 def process_pr_with_local_repo(pr_info, regenerated_files):
     """Clone PR branch, apply LLM changes, generate lockfile, and prepare for test generation"""
     
@@ -798,64 +1546,27 @@ def process_pr_with_local_repo(pr_info, regenerated_files):
             print(f"[LocalRepo] ✓ Applied LLM changes to {file_path}")
         
         # Generate lockfile if any package.json was changed (check for files ending with package.json)
-        package_json_files = [f for f in regenerated_files.keys() if f.endswith("package.json")]
+        package_json_files_list = [f for f in regenerated_files.keys() if f.endswith("package.json")]
+        package_json_files_dict = {f: regenerated_files[f] for f in package_json_files_list}
         
-        if package_json_files:
-            print(f"[LocalRepo] package.json files detected: {package_json_files}")
+        if package_json_files_list:
+            print(f"[LocalRepo] package.json files detected: {package_json_files_list}")
             
             # Process each package.json file
-            for package_file in package_json_files:
+            for package_file in package_json_files_list:
                 # Get the directory containing the package.json
                 package_dir = os.path.dirname(package_file) if os.path.dirname(package_file) else "."
                 package_dir_path = os.path.join(repo_path, package_dir)
                 
                 print(f"[LocalRepo] Running npm install in directory: {package_dir_path}")
                 
-                try:
-                    # Run npm install in the correct directory
-                    result = subprocess.run(
-                        ["npm", "install", "--legacy-peer-deps"],
-                        cwd=package_dir_path,
-                        capture_output=True,
-                        text=True,
-                        timeout=300  # 5 minute timeout
-                    )
-                    
-                    if result.returncode == 0:
-                        print(f"[LocalRepo] ✓ npm install completed successfully in {package_dir}")
-                        
-                        # Determine lockfile path relative to the package.json location
-                        if package_dir == ".":
-                            lockfile_relative_path = "package-lock.json"
-                        else:
-                            lockfile_relative_path = os.path.join(package_dir, "package-lock.json")
-                        
-                        lockfile_absolute_path = os.path.join(repo_path, lockfile_relative_path)
-                        
-                        if os.path.exists(lockfile_absolute_path):
-                            with open(lockfile_absolute_path, "r", encoding="utf-8") as f:
-                                lockfile_content = f.read()
-                            
-                            # Add the lockfile to regenerated_files for GitHub API push
-                            regenerated_files[lockfile_relative_path] = {
-                                "old_code": "",  # Could fetch existing lockfile from GitHub if needed
-                                "changes": f"Regenerated lockfile after {package_file} update via npm install",
-                                "updated_code": lockfile_content
-                            }
-                            print(f"[LocalRepo] ✓ Generated and added {lockfile_relative_path} to commit")
-                        else:
-                            print(f"[LocalRepo] ⚠️ Warning: package-lock.json not generated by npm install in {package_dir}")
-                    else:
-                        print(f"[LocalRepo] ❌ npm install failed with return code {result.returncode} in {package_dir}")
-                        print(f"[LocalRepo] stdout: {result.stdout}")
-                        print(f"[LocalRepo] stderr: {result.stderr}")
-                
-                except subprocess.TimeoutExpired:
-                    print(f"[LocalRepo] ❌ npm install timed out after 5 minutes in {package_dir}")
-                except FileNotFoundError:
-                    print("[LocalRepo] ❌ npm not found. Please ensure Node.js and npm are installed.")
-                except Exception as e:
-                    print(f"[LocalRepo] ❌ Error during npm install in {package_dir}: {e}")
+                # Try npm install with intelligent error correction
+                npm_success = run_npm_install_with_error_correction(
+                    package_dir_path, package_file, repo_path, regenerated_files, pr_info
+                )
+        
+        # Run npm build with error correction after all dependencies are resolved
+        build_status = run_npm_build_with_error_correction(repo_path, package_json_files_dict, regenerated_files, pr_info)
         
         # TODO: Future user story - Generate and run tests here
         # print("[LocalRepo] Preparing for test generation and execution...")
@@ -867,7 +1578,20 @@ def process_pr_with_local_repo(pr_info, regenerated_files):
         # run_selenium_tests(repo_path)
         # run_cucumber_tests(repo_path)
         
-        print(f"[LocalRepo] ✓ Local processing completed. Final file count: {len(regenerated_files)}")
+        print(f"[LocalRepo] ✅ Local processing completed with intelligent error correction!")
+        print(f"[LocalRepo] 📊 Final summary:")
+        print(f"[LocalRepo]   - Total files: {len(regenerated_files)}")
+        print(f"[LocalRepo]   - Package.json files processed: {len(package_json_files_list)}")
+        
+        # Count LLM corrections with more detail
+        llm_corrected_files = [f for f in regenerated_files.values() if 'LLM-corrected' in f.get('changes', '') or 'LLM attempted' in f.get('changes', '')]
+        successful_corrections = [f for f in llm_corrected_files if 'npm install still failed' not in f.get('changes', '')]
+        failed_corrections = [f for f in llm_corrected_files if 'npm install still failed' in f.get('changes', '')]
+        
+        print(f"[LocalRepo]   - LLM successful corrections: {len(successful_corrections)}")
+        if failed_corrections:
+            print(f"[LocalRepo]   - LLM failed corrections: {len(failed_corrections)} (npm install still failed after multiple attempts)")
+        print(f"[LocalRepo]   - Build status: {build_status}")
         print(f"[LocalRepo] ✓ Workspace preserved at: {workspace_dir}")
         
     except Exception as e:
