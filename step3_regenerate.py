@@ -8,6 +8,21 @@ from mcp import ClientSession
 from mcp.client.stdio import stdio_client
 from mcp import StdioServerParameters
 from dotenv import load_dotenv
+
+# OpenAI for web search (build error correction only)
+try:
+    import openai
+    from openai import OpenAI
+    OPENAI_CLIENT = None
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+    if OPENAI_API_KEY:
+        OPENAI_CLIENT = OpenAI(api_key=OPENAI_API_KEY)
+        print(f"[DEBUG] ✅ OpenAI client initialized for web search")
+    else:
+        print(f"[DEBUG] ⚠️ OPENAI_API_KEY not found - web search disabled")
+except ImportError:
+    print(f"[DEBUG] ⚠️ OpenAI package not installed - web search disabled")
+    OPENAI_CLIENT = None
 try:
     from git import Repo  # type: ignore
 except ImportError:
@@ -950,6 +965,117 @@ IMPORTANT: Return ONLY the corrected package.json in the code block, not the ori
         print(f"[LocalRepo] ❌ Error during LLM package.json correction: {e}")
         return None
 
+async def fix_package_json_with_web_search(package_json_content, npm_error, package_file_path, pr_info):
+    """
+    Use OpenAI with web search to fix package.json based on npm install errors.
+    This function uses web search to find current package versions and fix version conflicts.
+    Returns corrected package.json content or None if correction fails.
+    """
+    if not OPENAI_CLIENT:
+        print("[LocalRepo] ⚠️ OpenAI client not available - falling back to regular LLM")
+        return await fix_package_json_with_llm(package_json_content, npm_error, package_file_path, pr_info)
+    
+    if not pr_info:
+        print("[LocalRepo] 🔧 No PR info available for web search error correction")
+        return None
+    
+    print(f"[LocalRepo] 🌐 Using OpenAI with web search to fix package.json errors...")
+    
+    # Check if this is a version-related error that would benefit from web search
+    version_error_indicators = [
+        'no matching version found', 'etarget', 'notarget', 'version that doesn\'t exist',
+        'package version that doesn\'t exist', 'cannot find version'
+    ]
+    
+    is_version_error = any(indicator in npm_error.lower() for indicator in version_error_indicators)
+    
+    if not is_version_error:
+        print("[LocalRepo] 🔄 Not a version error - using regular LLM instead of web search")
+        return await fix_package_json_with_llm(package_json_content, npm_error, package_file_path, pr_info)
+    
+    # Create web search prompt for npm install errors
+    web_search_prompt = f"""I'm getting npm install errors related to package versions. Here's the exact error:
+
+{npm_error}
+
+Current package.json:
+```json
+{package_json_content}
+```
+
+Please search for the current available versions of the failing packages and help me fix the version constraints. I need:
+
+1. What are the current stable/LTS versions of the failing packages?
+2. Which version ranges actually exist and work together?
+3. How to fix ETARGET/version not found errors?
+4. Compatible version combinations for the failing packages
+
+Please provide a corrected package.json with working version constraints based on what's currently available."""
+
+    try:
+        # Use OpenAI Responses API with web search
+        response = await asyncio.to_thread(
+            OPENAI_CLIENT.responses.create,
+            model="gpt-4.1-mini",
+            tools=[{"type": "web_search_preview"}],
+            input=web_search_prompt
+        )
+        
+        # Extract the response text from Responses API
+        if hasattr(response, 'output_text'):
+            response_text = response.output_text
+        else:
+            print("[LocalRepo] ❌ Could not extract response from OpenAI web search")
+            return None
+        
+        print(f"[LocalRepo] 🌐 Web search completed, analyzing response...")
+        
+        # Parse the corrected package.json from the response
+        patterns = [
+            # Pattern for explicit package.json mentions with JSON
+            r'```json\s*//\s*package\.json[^\n]*\n([\s\S]*?)```',
+            r'```json\s*package\.json[^\n]*\n([\s\S]*?)```',
+            # Pattern for corrected/fixed package.json
+            r'(?:corrected|fixed|updated)\s+package\.json[:\s]*```json\n([\s\S]*?)```',
+            # Generic JSON pattern (most common)
+            r'```json\n([\s\S]*?)```'
+        ]
+        
+        corrected_json = None
+        for pattern in patterns:
+            matches = re.findall(pattern, response_text, re.IGNORECASE)
+            
+            for match in matches:
+                potential_json = match.strip() if isinstance(match, str) else match[0].strip()
+                
+                # Validate JSON
+                try:
+                    parsed = json.loads(potential_json)
+                    # Check if it looks like a package.json (has name, dependencies, etc.)
+                    if any(key in parsed for key in ['dependencies', 'devDependencies', 'name', 'scripts']):
+                        corrected_json = potential_json
+                        break
+                except json.JSONDecodeError:
+                    continue  # Skip invalid JSON
+            
+            if corrected_json:
+                break  # Found valid package.json, stop trying other patterns
+        
+        if corrected_json:
+            print(f"[LocalRepo] 🎉 Web search successfully provided package.json correction")
+            return corrected_json
+        else:
+            print(f"[LocalRepo] ❌ Could not extract corrected package.json from web search response")
+            print(f"[LocalRepo] 🔍 Response preview: {response_text[:500]}...")
+            # Fall back to regular LLM if web search didn't provide parseable results
+            print("[LocalRepo] 🔄 Falling back to regular LLM correction...")
+            return await fix_package_json_with_llm(package_json_content, npm_error, package_file_path, pr_info)
+            
+    except Exception as e:
+        print(f"[LocalRepo] ❌ Error during web search package.json correction: {e}")
+        print("[LocalRepo] 🔄 Falling back to regular LLM correction...")
+        return await fix_package_json_with_llm(package_json_content, npm_error, package_file_path, pr_info)
+
 async def fix_package_json_for_build_errors(package_json_content, build_error, package_dir_path, pr_info):
     """
     Use LLM to fix package.json based on build errors that indicate missing dependencies.
@@ -1048,6 +1174,117 @@ IMPORTANT: Return ONLY the corrected package.json in the code block, not the ori
     except Exception as e:
         print(f"[LocalRepo] ❌ Error during LLM package.json build error correction: {e}")
         return None
+
+async def fix_package_json_for_build_errors_with_web_search(package_json_content, build_error, package_dir_path, pr_info):
+    """
+    Use OpenAI with web search to fix package.json based on build errors that indicate missing dependencies.
+    This function uses web search to find current package versions and resolve dependency issues.
+    Returns corrected package.json content or None if correction fails.
+    """
+    if not OPENAI_CLIENT:
+        print("[LocalRepo] ⚠️ OpenAI client not available - falling back to regular LLM")
+        return await fix_package_json_for_build_errors(package_json_content, build_error, package_dir_path, pr_info)
+    
+    if not pr_info:
+        print("[LocalRepo] 🔧 No PR info available for web search build dependency correction")
+        return None
+    
+    print(f"[LocalRepo] 🌐 Using OpenAI with web search to fix package.json for build dependency errors...")
+    
+    # Check if this is a dependency-related error that would benefit from web search
+    dependency_error_indicators = [
+        'cannot find module', 'module not found', 'missing dependency', 
+        'package not found', 'type declarations', 'cannot resolve'
+    ]
+    
+    is_dependency_error = any(indicator in build_error.lower() for indicator in dependency_error_indicators)
+    
+    if not is_dependency_error:
+        print("[LocalRepo] 🔄 Not a dependency error - using regular LLM instead of web search")
+        return await fix_package_json_for_build_errors(package_json_content, build_error, package_dir_path, pr_info)
+    
+    # Create web search prompt for build dependency errors
+    web_search_prompt = f"""I'm getting build errors indicating missing dependencies. Here's the exact error:
+
+{build_error}
+
+Current package.json:
+```json
+{package_json_content}
+```
+
+Please search for the current available packages and help me fix the missing dependencies. I need:
+
+1. What are the correct package names and current stable versions for the missing modules?
+2. Which packages need to be in dependencies vs devDependencies?
+3. What @types/* packages are needed for TypeScript projects?
+4. Are there any package name changes or deprecations I should know about?
+
+Please provide a corrected package.json with the missing dependencies added based on what's currently available."""
+
+    try:
+        # Use OpenAI Responses API with web search
+        response = await asyncio.to_thread(
+            OPENAI_CLIENT.responses.create,
+            model="gpt-4.1-mini",
+            tools=[{"type": "web_search_preview"}],
+            input=web_search_prompt
+        )
+        
+        # Extract the response text from Responses API
+        if hasattr(response, 'output_text'):
+            response_text = response.output_text
+        else:
+            print("[LocalRepo] ❌ Could not extract response from OpenAI web search")
+            return None
+        
+        print(f"[LocalRepo] 🌐 Web search completed, analyzing response...")
+        
+        # Parse the corrected package.json from the response
+        patterns = [
+            # Pattern for explicit package.json mentions with JSON
+            r'```json\s*//\s*package\.json[^\n]*\n([\s\S]*?)```',
+            r'```json\s*package\.json[^\n]*\n([\s\S]*?)```',
+            # Pattern for corrected/fixed package.json
+            r'(?:corrected|fixed|updated)\s+package\.json[:\s]*```json\n([\s\S]*?)```',
+            # Generic JSON pattern (most common)
+            r'```json\n([\s\S]*?)```'
+        ]
+        
+        corrected_json = None
+        for pattern in patterns:
+            matches = re.findall(pattern, response_text, re.IGNORECASE)
+            
+            for match in matches:
+                potential_json = match.strip() if isinstance(match, str) else match[0].strip()
+                
+                # Validate JSON
+                try:
+                    parsed = json.loads(potential_json)
+                    # Check if it looks like a package.json (has name, dependencies, etc.)
+                    if any(key in parsed for key in ['dependencies', 'devDependencies', 'name', 'scripts']):
+                        corrected_json = potential_json
+                        break
+                except json.JSONDecodeError:
+                    continue  # Skip invalid JSON
+            
+            if corrected_json:
+                break  # Found valid package.json, stop trying other patterns
+        
+        if corrected_json:
+            print(f"[LocalRepo] 🎉 Web search successfully provided package.json correction for build dependencies")
+            return corrected_json
+        else:
+            print(f"[LocalRepo] ❌ Could not extract corrected package.json from web search response")
+            print(f"[LocalRepo] 🔍 Response preview: {response_text[:500]}...")
+            # Fall back to regular LLM if web search didn't provide parseable results
+            print("[LocalRepo] 🔄 Falling back to regular LLM correction...")
+            return await fix_package_json_for_build_errors(package_json_content, build_error, package_dir_path, pr_info)
+            
+    except Exception as e:
+        print(f"[LocalRepo] ❌ Error during web search package.json build dependency correction: {e}")
+        print("[LocalRepo] 🔄 Falling back to regular LLM correction...")
+        return await fix_package_json_for_build_errors(package_json_content, build_error, package_dir_path, pr_info)
 
 async def fix_build_errors_with_llm(build_error, affected_files, package_dir_path, pr_info):
     """
@@ -1174,21 +1411,24 @@ IMPORTANT:
                 # Parse the corrected files from the response
                 corrected_files = {}
                 
-                # Multiple patterns to try for extracting file corrections
+                # Enhanced patterns to extract file corrections from various LLM response formats
                 patterns = [
-                    # Pattern 1: #### filename with code block
-                    r'#### ([^\n]+)\n```[a-zA-Z0-9]*\n([\s\S]*?)```',
-                    # Pattern 2: #### filename with json code block
-                    r'#### ([^\n]+)\n```json\n([\s\S]*?)```', 
-                    # Pattern 3: ### Fixed Files: with #### subsections
-                    r'### Fixed Files:[\s\S]*?#### ([^\n]+)\n```[a-zA-Z0-9]*\n([\s\S]*?)```',
-                    # Pattern 4: Just look for any filename.json followed by code block
-                    r'([a-zA-Z0-9_./\-]+\.json)\n```[a-zA-Z0-9]*\n([\s\S]*?)```',
-                    # Pattern 5: Filename in quotes or backticks followed by code
-                    r'`([a-zA-Z0-9_./\-]+\.json)`\n```[a-zA-Z0-9]*\n([\s\S]*?)```'
+                    # Pattern 1: #### filename with code block (original format)
+                    r'#### ([^\n{]+)\n```[a-zA-Z0-9]*\n([\s\S]*?)```',
+                    # Pattern 2: Look for actual filenames (not placeholders) in the affected files
+                    r'#### (src/[^\n]+\.tsx?)\n```[a-zA-Z0-9]*\n([\s\S]*?)```',
+                    r'#### (src/[^\n]+\.jsx?)\n```[a-zA-Z0-9]*\n([\s\S]*?)```',
+                    r'#### ([^\n]+\.tsx?)\n```[a-zA-Z0-9]*\n([\s\S]*?)```',
+                    r'#### ([^\n]+\.jsx?)\n```[a-zA-Z0-9]*\n([\s\S]*?)```',
+                    # Pattern 3: ### Fixed Files: with actual file names
+                    r'### Fixed Files:[\s\S]*?#### (src/[^\n]+\.tsx?)\n```[a-zA-Z0-9]*\n([\s\S]*?)```',
+                    # Pattern 4: Direct code blocks after file mentions
+                    r'(src/[A-Za-z0-9_./\-]+\.tsx?)[\s\S]*?```[a-zA-Z0-9]*\n([\s\S]*?)```',
+                    # Pattern 5: Any TypeScript/JavaScript file followed by code
+                    r'([A-Za-z0-9_./\-]+\.(?:tsx?|jsx?))\s*:?\s*```[a-zA-Z0-9]*\n([\s\S]*?)```'
                 ]
                 
-                for pattern in patterns:
+                for i, pattern in enumerate(patterns):
                     file_sections = re.findall(pattern, response, re.IGNORECASE)
                     
                     for file_path, file_content in file_sections:
@@ -1198,7 +1438,11 @@ IMPORTANT:
                         # Check if this file is one we're trying to fix
                         if file_path in affected_file_contents:
                             corrected_files[file_path] = file_content
-                            print(f"[LocalRepo] ✅ LLM provided correction for {file_path}")
+                            print(f"[LocalRepo] ✅ LLM provided correction for {file_path} (pattern {i+1})")
+                        elif any(file_path.endswith(af) for af in affected_files):
+                            # Handle case where path might be slightly different
+                            corrected_files[file_path] = file_content
+                            print(f"[LocalRepo] ✅ LLM provided correction for {file_path} (pattern {i+1}, matched by suffix)")
                     
                     if corrected_files:
                         break  # Found files with this pattern, stop trying others
@@ -1206,13 +1450,185 @@ IMPORTANT:
                 if corrected_files:
                     return corrected_files
                 else:
+                    # Enhanced debugging: try to understand what the LLM actually provided
                     print(f"[LocalRepo] ❌ Could not extract corrected files from LLM response")
-                    print(f"[LocalRepo] 🔍 Response preview: {response[:500]}...")
+                    print(f"[LocalRepo] 🔍 Looking for mentions of affected files in response...")
+                    
+                    for affected_file in affected_files:
+                        if affected_file in response:
+                            print(f"[LocalRepo] ✓ Found mention of {affected_file} in response")
+                        else:
+                            print(f"[LocalRepo] ✗ No mention of {affected_file} in response")
+                    
+                    # Look for any code blocks at all
+                    code_blocks = re.findall(r'```[a-zA-Z0-9]*\n([\s\S]*?)```', response)
+                    print(f"[LocalRepo] 🔍 Found {len(code_blocks)} code blocks in response")
+                    
+                    if code_blocks:
+                        print(f"[LocalRepo] 🔍 First code block preview: {code_blocks[0][:200]}...")
+                        
+                        # If there's exactly one code block and one affected file, try to match them
+                        if len(code_blocks) == 1 and len(affected_files) == 1:
+                            print(f"[LocalRepo] 🎯 Attempting to match single code block to single affected file")
+                            corrected_files[affected_files[0]] = code_blocks[0].strip()
+                            return corrected_files
+                    
+                    print(f"[LocalRepo] 🔍 Full response preview: {response[:1000]}...")
                     return None
                     
     except Exception as e:
         print(f"[LocalRepo] ❌ Error during LLM build error correction: {e}")
         return None
+
+async def fix_build_errors_with_web_search(build_error, affected_files, package_dir_path, pr_info):
+    """
+    Use OpenAI with web search to fix TypeScript/build configuration errors.
+    This function specifically targets build configuration issues that benefit from web search.
+    Returns dict of corrected files or None if correction fails.
+    """
+    if not OPENAI_CLIENT:
+        print("[LocalRepo] ⚠️ OpenAI client not available - falling back to regular LLM")
+        return await fix_build_errors_with_llm(build_error, affected_files, package_dir_path, pr_info)
+    
+    if not pr_info:
+        print("[LocalRepo] 🔧 No PR info available for web search build error correction")
+        return None
+    
+    print(f"[LocalRepo] 🌐 Using OpenAI with web search to fix build errors...")
+    
+    # Check if this is a TypeScript configuration error that would benefit from web search
+    config_error_indicators = [
+        'tsconfig', 'unknown compiler option', 'option cannot be specified',
+        'allowImportingTsExtensions', 'composite', 'noEmit', 'emitDeclarationOnly',
+        'verbatimModuleSyntax', 'importsNotUsedAsValues', 'strictNullChecks',
+        'exactOptionalPropertyTypes', 'tsBuildInfoFile', 'incremental'
+    ]
+    
+    is_config_error = any(indicator in build_error.lower() for indicator in config_error_indicators)
+    
+    if not is_config_error:
+        print("[LocalRepo] 🔄 Not a configuration error - using regular LLM instead of web search")
+        return await fix_build_errors_with_llm(build_error, affected_files, package_dir_path, pr_info)
+    
+    # Analyze the build error to identify problematic files
+    affected_file_contents = {}
+    for file_path in affected_files:
+        full_path = os.path.join(package_dir_path, file_path)
+        if os.path.exists(full_path):
+            try:
+                with open(full_path, "r", encoding="utf-8") as f:
+                    affected_file_contents[file_path] = f.read()
+            except Exception as e:
+                print(f"[LocalRepo] ⚠️ Could not read {file_path}: {e}")
+                continue
+    
+    if not affected_file_contents:
+        print("[LocalRepo] ❌ No affected files could be read for web search build error correction")
+        return None
+    
+    # Create build error correction prompt for web search
+    files_context = ""
+    for file_path, content in affected_file_contents.items():
+        files_context += f"\n\n--- {file_path} ---\n```json\n{content}\n```"
+    
+    web_search_prompt = f"""I'm getting TypeScript build errors and need help fixing the configuration. Here are the exact errors:
+
+{build_error}
+
+Current configuration files:
+{files_context}
+
+Please search for the latest TypeScript configuration best practices and help me fix these specific errors. I need:
+1. Proper TypeScript compiler options that work together
+2. Correct settings for modern TypeScript projects with Vite
+3. How to fix "allowImportingTsExtensions" errors
+4. Proper project reference configurations
+
+Please provide the corrected configuration files."""
+
+    try:
+        # Use OpenAI Responses API with web search
+        response = await asyncio.to_thread(
+            OPENAI_CLIENT.responses.create,
+            model="gpt-4.1-mini",
+            tools=[{"type": "web_search_preview"}],
+            input=web_search_prompt
+        )
+        
+        # Extract the response text from Responses API
+        if hasattr(response, 'output_text'):
+            response_text = response.output_text
+        else:
+            print("[LocalRepo] ❌ Could not extract response from OpenAI web search")
+            return None
+        
+        print(f"[LocalRepo] 🌐 Web search completed, analyzing response...")
+        
+        # Parse the corrected files from the response
+        corrected_files = {}
+        
+        # Enhanced patterns for extracting TypeScript config files
+        patterns = [
+            # Pattern for JSON config files with explicit filenames
+            r'```json\s*//\s*([^\n]*\.json)[^\n]*\n([\s\S]*?)```',
+            r'```json\s*([^\n]*\.json)[^\n]*\n([\s\S]*?)```',
+            # Pattern for config files mentioned by name
+            r'(tsconfig\.(?:app|node)?\.json)\s*[:\n]+\s*```[a-zA-Z0-9]*\n([\s\S]*?)```',
+            # Pattern for any JSON code block near mentions of config files
+            r'(?:tsconfig\.(?:app|node)?\.json|TypeScript configuration)[\s\S]*?```json\n([\s\S]*?)```',
+            # Generic pattern for JSON blocks
+            r'```json\n([\s\S]*?)```'
+        ]
+        
+        for pattern in patterns:
+            matches = re.findall(pattern, response_text, re.IGNORECASE)
+            
+            for match in matches:
+                if len(match) == 2:  # (filename, content)
+                    file_path, file_content = match
+                    file_path = file_path.strip()
+                    file_content = file_content.strip()
+                else:  # Just content
+                    file_content = match if isinstance(match, str) else match[0]
+                    file_content = file_content.strip()
+                    # Try to guess which config file this is for
+                    if 'app' in file_content.lower() or '"app"' in file_content:
+                        file_path = 'tsconfig.app.json'
+                    elif 'node' in file_content.lower() or '"node"' in file_content:
+                        file_path = 'tsconfig.node.json'
+                    else:
+                        file_path = 'tsconfig.json'
+                
+                # Validate JSON
+                try:
+                    json.loads(file_content)
+                    # Check if this file is one we're trying to fix
+                    if file_path in affected_file_contents:
+                        corrected_files[file_path] = file_content
+                        print(f"[LocalRepo] ✅ Web search provided correction for {file_path}")
+                    elif file_path in [f for f in affected_files]:
+                        corrected_files[file_path] = file_content
+                        print(f"[LocalRepo] ✅ Web search provided correction for {file_path}")
+                except json.JSONDecodeError:
+                    continue  # Skip invalid JSON
+            
+            if corrected_files:
+                break  # Found files with this pattern, stop trying others
+        
+        if corrected_files:
+            print(f"[LocalRepo] 🎉 Web search successfully provided {len(corrected_files)} corrections")
+            return corrected_files
+        else:
+            print(f"[LocalRepo] ❌ Could not extract corrected files from web search response")
+            print(f"[LocalRepo] 🔍 Response preview: {response_text[:500]}...")
+            # Fall back to regular LLM if web search didn't provide parseable results
+            print("[LocalRepo] 🔄 Falling back to regular LLM correction...")
+            return await fix_build_errors_with_llm(build_error, affected_files, package_dir_path, pr_info)
+            
+    except Exception as e:
+        print(f"[LocalRepo] ❌ Error during web search build error correction: {e}")
+        print("[LocalRepo] 🔄 Falling back to regular LLM correction...")
+        return await fix_build_errors_with_llm(build_error, affected_files, package_dir_path, pr_info)
 
 def run_npm_install_with_error_correction(package_dir_path, package_file, repo_path, regenerated_files, pr_info):
     """
@@ -1322,10 +1738,10 @@ def run_npm_install_with_error_correction(package_dir_path, package_file, repo_p
         
         print(f"[LocalRepo] 🤖 Sending error to LLM for analysis...")
         
-        # Use asyncio to run the async LLM correction
+        # Use web search for version errors, regular LLM for others
         try:
             corrected_package_json = asyncio.run(
-                fix_package_json_with_llm(
+                fix_package_json_with_web_search(
                     current_package_json, 
                     full_error + correction_context, 
                     package_file, 
@@ -1562,9 +1978,9 @@ def run_npm_build_with_error_correction(repo_path, package_json_files, regenerat
                         
                         print(f"[LocalRepo] 🤖 Using LLM to fix package.json for dependency errors...")
                         
-                        # Use LLM to fix package.json based on build errors
+                        # Use web search to fix package.json based on build dependency errors
                         corrected_package_json = asyncio.run(
-                            fix_package_json_for_build_errors(
+                            fix_package_json_for_build_errors_with_web_search(
                                 current_package_json,
                                 full_build_error,
                                 package_dir_path,
@@ -1572,43 +1988,56 @@ def run_npm_build_with_error_correction(repo_path, package_json_files, regenerat
                             )
                         )
                         
-                        if corrected_package_json and corrected_package_json.strip() != current_package_json.strip():
-                            # Write corrected package.json
-                            with open(package_json_path, "w", encoding="utf-8") as f:
-                                f.write(corrected_package_json)
-                            
-                            print(f"[LocalRepo] ✅ Updated package.json to fix dependency errors")
-                            
-                            # Update regenerated_files with the correction
-                            relative_package_path = os.path.join(package_dir, "package.json") if package_dir != "." else "package.json"
-                            regenerated_files[relative_package_path] = {
-                                "old_code": current_package_json,
-                                "changes": f"LLM-corrected package.json to fix build dependency errors (attempt {attempt})",
-                                "updated_code": corrected_package_json
-                            }
-                            
-                            # Run npm install again with the updated package.json
-                            print(f"[LocalRepo] 📦 Running npm install after package.json update...")
-                            npm_install_success = run_npm_install_with_error_correction(
-                                package_dir_path, relative_package_path, repo_path, regenerated_files, pr_info
-                            )
-                            
-                            if npm_install_success:
-                                print(f"[LocalRepo] ✅ npm install succeeded after package.json update")
+                        # Check if the corrected package.json is actually different
+                        if corrected_package_json:
+                            # Normalize both JSONs for comparison (parse and re-serialize to remove formatting differences)
+                            try:
+                                current_parsed = json.loads(current_package_json)
+                                corrected_parsed = json.loads(corrected_package_json)
                                 
-                                # Retry build with updated dependencies
-                                print(f"[LocalRepo] 🔄 Retrying npm run build after dependency update...")
-                                result = attempt_npm_build(package_dir_path)
-                                
-                                if result is not None and result.returncode == 0:
-                                    print(f"[LocalRepo] 🎉 npm run build succeeded after fixing dependencies!")
-                                    build_results.append(f"{package_file}: SUCCESS (after dependency fix in attempt {attempt})")
-                                    build_success = True
-                                    break
+                                # Compare the actual JSON content, not just string representation
+                                if current_parsed != corrected_parsed:
+                                    # Write corrected package.json
+                                    with open(package_json_path, "w", encoding="utf-8") as f:
+                                        f.write(corrected_package_json)
+                                    
+                                    print(f"[LocalRepo] ✅ Updated package.json to fix dependency errors")
+                                    
+                                    # Update regenerated_files with the correction
+                                    relative_package_path = os.path.join(package_dir, "package.json") if package_dir != "." else "package.json"
+                                    regenerated_files[relative_package_path] = {
+                                        "old_code": current_package_json,
+                                        "changes": f"LLM-corrected package.json to fix build dependency errors (attempt {attempt})",
+                                        "updated_code": corrected_package_json
+                                    }
+                                    
+                                    # Run npm install again with the updated package.json
+                                    print(f"[LocalRepo] 📦 Running npm install after package.json update...")
+                                    npm_install_success = run_npm_install_with_error_correction(
+                                        package_dir_path, relative_package_path, repo_path, regenerated_files, pr_info
+                                    )
+                                    
+                                    if npm_install_success:
+                                        print(f"[LocalRepo] ✅ npm install succeeded after package.json update")
+                                        
+                                        # Retry build with updated dependencies
+                                        print(f"[LocalRepo] 🔄 Retrying npm run build after dependency update...")
+                                        result = attempt_npm_build(package_dir_path)
+                                        
+                                        if result is not None and result.returncode == 0:
+                                            print(f"[LocalRepo] 🎉 npm run build succeeded after fixing dependencies!")
+                                            build_results.append(f"{package_file}: SUCCESS (after dependency fix in attempt {attempt})")
+                                            build_success = True
+                                            break
+                                        else:
+                                            print(f"[LocalRepo] ⚠️ Build still failed after dependency fix, continuing with source code corrections...")
+                                    else:
+                                        print(f"[LocalRepo] ❌ npm install failed after package.json update")
                                 else:
-                                    print(f"[LocalRepo] ⚠️ Build still failed after dependency fix, continuing with source code corrections...")
-                            else:
-                                print(f"[LocalRepo] ❌ npm install failed after package.json update")
+                                    print(f"[LocalRepo] ⚠️ Web search provided package.json but no meaningful changes detected")
+                            except json.JSONDecodeError as e:
+                                print(f"[LocalRepo] ❌ Error parsing JSON for comparison: {e}")
+                                print(f"[LocalRepo] ⚠️ LLM didn't provide valid package.json correction")
                         else:
                             print(f"[LocalRepo] ⚠️ LLM didn't change package.json or correction failed")
                             
@@ -1636,10 +2065,10 @@ def run_npm_build_with_error_correction(repo_path, package_json_files, regenerat
             
             print(f"[LocalRepo] 🎯 Identified affected files: {affected_files}")
             
-            # Use LLM to fix build errors
+            # Use web search for TypeScript config errors, regular LLM for others
             try:
                 corrected_files = asyncio.run(
-                    fix_build_errors_with_llm(
+                    fix_build_errors_with_web_search(
                         full_build_error,
                         affected_files,
                         package_dir_path,
