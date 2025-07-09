@@ -2,7 +2,7 @@ import os
 import json
 from dotenv import load_dotenv
 
-# Direct GitHub API (replacing MCP client)
+# Direct GitHub API only
 try:
     from github import Github
 except ImportError:
@@ -10,7 +10,7 @@ except ImportError:
     exit(1)
 
 def normalize_code(code):
-    # Normalize line endings, strip trailing whitespace, remove leading/trailing blank lines
+    """Normalize line endings, strip trailing whitespace, remove leading/trailing blank lines"""
     return '\n'.join(
         line.rstrip()
         for line in code.replace('\r\n', '\n').replace('\r', '\n').split('\n')
@@ -26,9 +26,10 @@ if not GITHUB_TOKEN:
 
 # Initialize direct GitHub client
 github_direct = Github(GITHUB_TOKEN)
-print(f"[DEBUG] ✅ Step4 GitHub API client initialized")
+print(f"[Step4] ✅ GitHub API client initialized")
 
 def commit_regenerated_files(pr_info, regenerated_files):
+    """Commit regenerated files to GitHub using direct API calls"""
     REPO_NAME = pr_info["repo_name"]
     PR_NUMBER = pr_info["pr_number"]
     
@@ -54,10 +55,15 @@ def commit_regenerated_files(pr_info, regenerated_files):
                 base_branch = repo.get_branch(BASE_BRANCH)
                 base_sha = base_branch.commit.sha
                 repo.create_git_ref(ref=f"refs/heads/{TARGET_BRANCH}", sha=base_sha)
-                print(f"Created branch: {TARGET_BRANCH}")
+                print(f"[Step4] Created branch: {TARGET_BRANCH}")
             except Exception as e:
-                print(f"Error creating branch {TARGET_BRANCH}: {e}")
+                print(f"[Step4] Error creating branch {TARGET_BRANCH}: {e}")
                 return
+
+        # Track successful updates
+        successful_updates = 0
+        skipped_files = 0
+        failed_files = 0
 
         # Iterate and push updates
         for fname, data in regenerated_files.items():
@@ -71,10 +77,11 @@ def commit_regenerated_files(pr_info, regenerated_files):
 
             # Only commit if normalized code is different
             if normalize_code(old_code) == normalize_code(updated_code):
-                print(f"Skipping {fname}: No real changes detected.")
+                print(f"[Step4] Skipping {fname}: No real changes detected.")
+                skipped_files += 1
                 continue
 
-            print(f"Updating {fname} in branch '{TARGET_BRANCH}'")
+            print(f"[Step4] Updating {fname} in branch '{TARGET_BRANCH}'")
 
             try:
                 # Use the AI's "changes" section in commit message
@@ -91,7 +98,8 @@ def commit_regenerated_files(pr_info, regenerated_files):
                         sha=existing_file.sha,
                         branch=TARGET_BRANCH
                     )
-                    print(f"Successfully updated {fname}")
+                    print(f"[Step4] ✓ Successfully updated {fname}")
+                    successful_updates += 1
                 except:
                     # File doesn't exist, create it
                     repo.create_file(
@@ -100,39 +108,57 @@ def commit_regenerated_files(pr_info, regenerated_files):
                         content=updated_code,
                         branch=TARGET_BRANCH
                     )
-                    print(f"Successfully created {fname}")
+                    print(f"[Step4] ✓ Successfully created {fname}")
+                    successful_updates += 1
                     
             except Exception as e:
-                print(f"Error processing {fname}: {e}")
+                print(f"[Step4] ❌ Error processing {fname}: {e}")
+                failed_files += 1
                 # For large files like package-lock.json, continue with other files
                 if "package-lock.json" in fname:
                     print(f"[Step4] ⚠️ Large lockfile {fname} failed to upload, continuing with other files...")
                 continue
 
+        # Print summary
+        print(f"[Step4] Summary: {successful_updates} updated, {skipped_files} skipped, {failed_files} failed")
+
         # Check if PR exists and create if needed
-        try:
-            # Get all open PRs and check if our target branch already has one
-            prs = repo.get_pulls(state="open", head=f"{repo.owner.login}:{TARGET_BRANCH}")
-            existing_pr = None
-            
-            for pr_item in prs:
-                existing_pr = pr_item
-                break
-            
-            if not existing_pr:
-                # Create new PR
-                new_pr = repo.create_pull(
-                    title="AI Refactored Code Update",
-                    body="This PR includes updated code based on coding standards with inline changes described.",
-                    head=TARGET_BRANCH,
-                    base=BASE_BRANCH
-                )
-                print(f"Created PR #{new_pr.number}: {new_pr.title}")
-            else:
-                print(f"PR already exists: #{existing_pr.number} - {existing_pr.title}")
+        if successful_updates > 0:
+            try:
+                # Get all open PRs and check if our target branch already has one
+                prs = repo.get_pulls(state="open", head=f"{repo.owner.login}:{TARGET_BRANCH}")
+                existing_pr = None
                 
-        except Exception as e:
-            print(f"Error checking/creating PR: {e}")
-            
+                for pr_item in prs:
+                    existing_pr = pr_item
+                    break
+                
+                if not existing_pr:
+                    # Create new PR
+                    pr_title = f"AI Refactored Code Update (PR #{PR_NUMBER})"
+                    pr_body = f"""This PR includes updated code based on coding standards with inline changes described.
+
+**Source PR:** #{PR_NUMBER}
+**Files Updated:** {successful_updates}
+**Files Skipped:** {skipped_files}
+**Files Failed:** {failed_files}
+
+This PR was automatically generated by AI code refinement."""
+                    
+                    new_pr = repo.create_pull(
+                        title=pr_title,
+                        body=pr_body,
+                        head=TARGET_BRANCH,
+                        base=BASE_BRANCH
+                    )
+                    print(f"[Step4] ✓ Created PR #{new_pr.number}: {new_pr.title}")
+                else:
+                    print(f"[Step4] ✓ PR already exists: #{existing_pr.number} - {existing_pr.title}")
+                    
+            except Exception as e:
+                print(f"[Step4] ❌ Error checking/creating PR: {e}")
+        else:
+            print(f"[Step4] ⚠️ No files were successfully updated, skipping PR creation")
+                
     except Exception as e:
-        print(f"[Step4] Error in commit process: {e}")
+        print(f"[Step4] ❌ Error in commit process: {e}")

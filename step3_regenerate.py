@@ -8,7 +8,6 @@ from mcp import ClientSession
 from mcp.client.stdio import stdio_client
 from mcp import StdioServerParameters
 from dotenv import load_dotenv
-# Removed MCP client - using direct GitHub API only
 try:
     from git import Repo  # type: ignore
 except ImportError:
@@ -149,6 +148,7 @@ def collect_files_for_refinement(repo_name: str, pr_number: int, pr_info=None) -
         return {}
 
 def fetch_repo_context(repo_name: str, pr_number: int, target_file: str, pr_info=None) -> str:
+    """Legacy function - use fetch_dynamic_context instead for updated context"""
     context = ""
     total_chars = 0
 
@@ -202,6 +202,121 @@ def fetch_repo_context(repo_name: str, pr_number: int, target_file: str, pr_info
         
     return context
 
+def fetch_dynamic_context(target_file: str, dynamic_context_cache: Dict[str, str], pr_files: Set[str], processed_files: Optional[Set[str]] = None) -> str:
+    """
+    Fetch context using dynamic cache with updated file contents.
+    Uses refined versions of previously processed files.
+    """
+    context = ""
+    total_chars = 0
+    refined_files_count = 0
+    original_files_count = 0
+    
+    if processed_files is None:
+        processed_files = set()
+    
+    print(f"[Step3] 🔄 Building dynamic context for {target_file}...")
+    
+    for file_name in pr_files:
+        if file_name == target_file:
+            continue  # Skip the target file itself
+            
+        # Skip lock files and GitHub config files
+        if file_name.endswith("package-lock.json") or file_name.endswith("package.lock.json"):
+            continue
+        if file_name.startswith('.github/'):
+            continue
+            
+        # Get the file content from dynamic cache
+        if file_name in dynamic_context_cache:
+            file_content = dynamic_context_cache[file_name]
+            file_size = len(file_content)
+            
+            # Determine if this file is refined or original
+            is_refined = file_name in processed_files
+            status = "🎯 REFINED" if is_refined else "📄 ORIGINAL"
+            
+            section = f"\n// File: {file_name} ({file_size} chars) [{status}]\n{file_content}\n"
+            
+            # Keep reasonable limit to avoid overwhelming the model
+            if total_chars + len(section) > MAX_CONTEXT_CHARS:
+                print(f"[Step3] ⚠️ Context size limit reached ({MAX_CONTEXT_CHARS} chars), stopping context build")
+                break
+                
+            context += section
+            total_chars += len(section)
+            
+            if is_refined:
+                refined_files_count += 1
+                print(f"[Step3] ✅ Added {file_name} to context ({file_size} chars) - REFINED VERSION")
+            else:
+                original_files_count += 1
+                print(f"[Step3] 📄 Added {file_name} to context ({file_size} chars) - ORIGINAL VERSION")
+        else:
+            print(f"[Step3] ⚠️ Warning: {file_name} not found in dynamic cache")
+    
+    print(f"[Step3] 📊 Dynamic context summary for {target_file}:")
+    print(f"[Step3]   - Total chars: {total_chars:,}")
+    print(f"[Step3]   - Refined files in context: {refined_files_count}")
+    print(f"[Step3]   - Original files in context: {original_files_count}")
+    print(f"[Step3]   - Total context files: {refined_files_count + original_files_count}")
+    
+    return context
+
+def initialize_dynamic_context_cache(repo_name: str, pr_number: int, pr_info=None) -> tuple[Dict[str, str], Set[str]]:
+    """
+    Initialize the dynamic context cache with original file contents from GitHub API.
+    Returns (cache_dict, file_set) for dynamic processing.
+    """
+    print(f"[Step3] Initializing dynamic context cache...")
+    cache = {}
+    pr_files = set()
+    
+    if not github_direct:
+        print(f"[Step3] GitHub API not available for cache initialization")
+        return cache, pr_files
+
+    try:
+        repo = github_direct.get_repo(repo_name)
+        pr = repo.get_pull(pr_number)
+        
+        ref = pr_info.get("pr_branch", pr.head.ref) if pr_info else pr.head.ref  # type: ignore
+        
+        for file in pr.get_files():
+            # Skip lock files and GitHub config files
+            if file.filename.endswith("package-lock.json") or file.filename.endswith("package.lock.json"):
+                print(f"[Step3] Skipping lock file: {file.filename}")
+                continue
+            if file.filename.startswith('.github/'):
+                print(f"[Step3] Skipping GitHub config file: {file.filename}")
+                continue
+                
+            pr_files.add(file.filename)
+            
+            try:
+                file_content = repo.get_contents(file.filename, ref=ref)
+                
+                # Handle both single file and list of files
+                if isinstance(file_content, list):
+                    print(f"[Step3] Skipping directory: {file.filename}")
+                    continue
+                
+                # Get the FULL file content
+                full_content = file_content.decoded_content.decode('utf-8')
+                cache[file.filename] = full_content
+                print(f"[Step3] Cached {file.filename} ({len(full_content)} chars)")
+                
+            except Exception as e:
+                print(f"[Step3] Error caching file {file.filename}: {e}")
+                continue
+                
+    except Exception as e:
+        print(f"[Step3] Error initializing dynamic cache: {e}")
+        return cache, pr_files
+        
+    print(f"[Step3] Dynamic cache initialized with {len(cache)} files")
+    return cache, pr_files
+
 def fetch_requirements_from_readme(repo_name: str, branch: str) -> str:
     if not github_direct:
         print(f"[DEBUG] Direct GitHub API not available for README")
@@ -227,12 +342,45 @@ def compose_prompt(requirements: str, code: str, file_name: str, context: str) -
     # Get the file extension for the AI to understand the language
     file_extension = file_name.split('.')[-1].lower()
     
-    return (
+    # Check if this is a package.json file for special dependency handling
+    is_package_json = file_name.endswith('package.json')
+    
+    base_prompt = (
         f"You are an expert AI code reviewer. Your job is to improve and refactor ONLY the given file `{file_name}` "
         f"so that it meets the following coding standards:\n\n"
         f"{requirements}\n\n"
         f"---\n Repository Context (other files for reference):\n{context}\n"
         f"---\n Current Code ({file_name} - {file_extension} file):\n```{file_extension}\n{code}\n```\n"
+    )
+    
+    if is_package_json:
+        dependency_instructions = (
+            f"\n---\n🔍 SPECIAL PACKAGE.JSON DEPENDENCY ANALYSIS:\n"
+            f"This is a package.json file. You MUST perform strict dependency analysis:\n\n"
+            f"1. CAREFULLY ANALYZE the context files above to identify ALL imports and dependencies actually used\n"
+            f"2. SCAN for: import statements, require(), @types/ packages, testing libraries, build tools\n"
+            f"3. REMOVE any unused dependencies that are not imported in the context files\n"
+            f"4. ADD any missing dependencies that are imported but not listed\n"
+            f"5. UPDATE dependency versions to latest stable versions (check compatibility)\n"
+            f"6. ORGANIZE dependencies into correct sections (dependencies vs devDependencies)\n"
+            f"7. ENSURE TypeScript types are in devDependencies (@types/*, typescript, etc.)\n"
+            f"8. ENSURE testing frameworks are in devDependencies (jest, @testing-library/*, etc.)\n"
+            f"9. ENSURE build tools are in devDependencies (webpack, babel, eslint, etc.)\n"
+            f"10. VERIFY peer dependencies are properly handled\n\n"
+            f"🚨 CRITICAL: Only include dependencies that are ACTUALLY USED in the context files above.\n"
+            f"Do NOT add speculative or 'might need' dependencies. Be STRICT and PRECISE.\n"
+        )
+    else:
+        dependency_instructions = (
+            f"\n---\n📦 DEPENDENCY REQUIREMENTS:\n"
+            f"For import statements and dependencies:\n"
+            f"1. ONLY use dependencies that exist in package.json or are built-in\n"
+            f"2. Do NOT add new import statements for packages not already available\n"
+            f"3. If you need a new dependency, mention it in the ### Changes section\n"
+            f"4. Prefer using existing dependencies from the context over adding new ones\n"
+        )
+    
+    format_instructions = (
         f"\n---\nPlease return the updated code and changes in the following EXACT format:\n"
         f"### Changes:\n- A bullet-point summary of what was changed.\n\n"
         f"### Updated Code:\n```{file_extension}\n<ONLY THE NEW/IMPROVED CODE HERE>\n```\n\n"
@@ -255,6 +403,8 @@ def compose_prompt(requirements: str, code: str, file_name: str, context: str) -
         f"    - In the ### Changes section, write: 'No changes needed.'\n"
         f"    - In the ### Updated Code section, return the original code unchanged.\n"
     )
+    
+    return base_prompt + dependency_instructions + format_instructions
 
 def parse_token_usage(result) -> tuple[int, int, int]:
     """Parse token usage from MCP response and return (prompt_tokens, completion_tokens, total_tokens)"""
@@ -384,17 +534,23 @@ def cleanup_extracted_code(updated_code: str) -> str:
     
     return updated_code
 
-async def process_single_file(session, file_name: str, old_code: str, requirements: str, pr_info: Optional[dict] = None) -> dict:
-    """Process a single file through the AI refinement pipeline"""
+async def process_single_file(session, file_name: str, old_code: str, requirements: str, pr_info: Optional[dict] = None, dynamic_context_cache: Optional[Dict[str, str]] = None, pr_files: Optional[Set[str]] = None, processed_files: Optional[Set[str]] = None) -> dict:
+    """Process a single file through the AI refinement pipeline with dynamic context"""
     try:
         print(f"[Step3] Processing file: {file_name}")
         
-        # Fetch context and compose prompt
-        if pr_info is None:
-            raise ValueError("pr_info cannot be None")
-        repo_name = pr_info["repo_name"]
-        pr_number = pr_info["pr_number"]
-        context = fetch_repo_context(repo_name, pr_number, file_name, pr_info)
+        # Fetch context using dynamic cache if available, otherwise fall back to static context
+        if dynamic_context_cache is not None and pr_files is not None:
+            print(f"[Step3] Using dynamic context for {file_name}")
+            context = fetch_dynamic_context(file_name, dynamic_context_cache, pr_files, processed_files)
+        else:
+            print(f"[Step3] Falling back to static context for {file_name}")
+            if pr_info is None:
+                raise ValueError("pr_info cannot be None")
+            repo_name = pr_info["repo_name"]
+            pr_number = pr_info["pr_number"]
+            context = fetch_repo_context(repo_name, pr_number, file_name, pr_info)
+        
         prompt = compose_prompt(requirements, old_code, file_name, context)
         
         print(f"[Step3] Calling AI for {file_name}...")
@@ -450,7 +606,7 @@ async def process_single_file(session, file_name: str, old_code: str, requiremen
         }
 
 async def regenerate_code_with_mcp(files: Dict[str, str], requirements: str, pr, pr_info=None) -> Dict[str, Dict[str, str]]:
-    """Main function to regenerate code using MCP - now much cleaner and focused"""
+    """Main function to regenerate code using MCP with dynamic context updates"""
     regenerated = {}
     server_params = StdioServerParameters(command="python", args=["server.py"])
 
@@ -459,14 +615,70 @@ async def regenerate_code_with_mcp(files: Dict[str, str], requirements: str, pr,
     total_completion_tokens = 0
     total_tokens = 0
 
+    # Initialize dynamic context cache
+    if pr_info:
+        repo_name = pr_info["repo_name"]
+        pr_number = pr_info["pr_number"]
+        dynamic_context_cache, pr_files = initialize_dynamic_context_cache(repo_name, pr_number, pr_info)
+        print(f"[Step3] 🎯 Dynamic context cache initialized with {len(dynamic_context_cache)} files")
+    else:
+        dynamic_context_cache = {}
+        pr_files = set(files.keys())
+        # Initialize cache with current file contents
+        for file_name, file_content in files.items():
+            dynamic_context_cache[file_name] = file_content
+
+    # Track which files have been processed for context building
+    processed_files = set()
+    total_files = len(files)
+    current_file_number = 0
+
+    # Separate package.json files to process them last (for dependency analysis)
+    package_json_files = {}
+    regular_files = {}
+    
+    for file_name, file_content in files.items():
+        if file_name.endswith('package.json'):
+            package_json_files[file_name] = file_content
+        else:
+            regular_files[file_name] = file_content
+    
+    # Create ordered processing list: regular files first, then package.json files
+    ordered_files = list(regular_files.items()) + list(package_json_files.items())
+    
+    print(f"[Step3] 📦 Processing order optimized for dependencies:")
+    print(f"[Step3]   - Regular files first: {len(regular_files)} files")
+    print(f"[Step3]   - Package.json files last: {len(package_json_files)} files")
+    print(f"[Step3]   - This ensures package.json sees all refined dependencies")
+
     try:
         async with stdio_client(server_params) as (read_stream, write_stream):
             async with ClientSession(read_stream, write_stream) as session:
                 await session.initialize()
 
-                # Process each file
-                for file_name, old_code in files.items():
-                    file_result = await process_single_file(session, file_name, old_code, requirements, pr_info)
+                # Process files in dependency-optimized order
+                for file_name, old_code in ordered_files:
+                    current_file_number += 1
+                    
+                    # Special indicator for package.json files
+                    if file_name.endswith('package.json'):
+                        print(f"[Step3] 📦 Processing PACKAGE.JSON {current_file_number}/{total_files}: {file_name}")
+                        print(f"[Step3] 🔍 DEPENDENCY ANALYSIS MODE: AI will analyze all refined files for exact dependencies")
+                    else:
+                        print(f"[Step3] 🔄 Processing file {current_file_number}/{total_files}: {file_name}")
+                    
+                    print(f"[Step3] 📊 Context status: {len(processed_files)} files already refined, {total_files - current_file_number} files remaining")
+                    
+                    file_result = await process_single_file(
+                        session, 
+                        file_name, 
+                        old_code, 
+                        requirements, 
+                        pr_info,
+                        dynamic_context_cache,
+                        pr_files,
+                        processed_files
+                    )
                     
                     # Extract token usage and accumulate
                     prompt_tokens, completion_tokens, tokens = file_result.pop("token_usage", (0, 0, 0))
@@ -476,15 +688,34 @@ async def regenerate_code_with_mcp(files: Dict[str, str], requirements: str, pr,
                     
                     # Store the result
                     regenerated[file_name] = file_result
+                    
+                    # Update dynamic cache with refined version for future files
+                    updated_code = file_result.get("updated_code", old_code)
+                    if updated_code != old_code:
+                        dynamic_context_cache[file_name] = updated_code
+                        processed_files.add(file_name)
+                        print(f"[Step3] ✅ Updated dynamic cache for {file_name} ({len(updated_code)} chars) - REFINED")
+                    else:
+                        print(f"[Step3] 📄 No changes for {file_name} - keeping original in cache")
+                        processed_files.add(file_name)  # Still mark as processed even if no changes
 
+        # Print final summary with dynamic context benefits
+        print(f"[Step3] 🎉 AI processing completed with dynamic context and dependency optimization!")
+        print(f"[Step3] 📊 Processing Summary:")
+        print(f"[Step3]   - Total files processed: {len(regenerated)}")
+        print(f"[Step3]   - Regular files refined: {len(regular_files)}")
+        print(f"[Step3]   - Package.json files analyzed: {len(package_json_files)}")
+        print(f"[Step3]   - Dynamic context benefit: Later files used refined versions of earlier files")
+        print(f"[Step3]   - Dependency optimization: Package.json files processed last with full context")
+        
         # Print final token usage and pricing
-        print(f"[Step3] TOTAL TOKEN USAGE: prompt_tokens={total_prompt_tokens}, completion_tokens={total_completion_tokens}, total_tokens={total_tokens}")
+        print(f"[Step3] 💰 TOTAL TOKEN USAGE: prompt_tokens={total_prompt_tokens:,}, completion_tokens={total_completion_tokens:,}, total_tokens={total_tokens:,}")
         
         # Calculate and print total API price for OpenAI GPT-4.1 Mini
         input_price = (total_prompt_tokens / 1000) * 0.00042
         output_price = (total_completion_tokens / 1000) * 0.00168
         total_price = input_price + output_price
-        print(f"[Step3] OpenAI GPT-4.1 Mini API PRICING: Total=${total_price:.4f} (input=${input_price:.4f}, output=${output_price:.4f})")
+        print(f"[Step3] 💵 OpenAI GPT-4.1 Mini API PRICING: Total=${total_price:.4f} (input=${input_price:.4f}, output=${output_price:.4f})")
 
     except Exception as e:
         print(f"[Step3] Error with MCP client: {e}")
