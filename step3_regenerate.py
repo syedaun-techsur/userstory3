@@ -112,6 +112,26 @@ def collect_files_for_refinement(repo_name: str, pr_number: int, pr_info=None) -
             if file["filename"].startswith('.github/'):
                 print(f"[DEBUG] Skipping GitHub workflow or config file: {file['filename']}")
                 continue
+            # Skip asset and binary files (don't need AI refinement)
+            asset_extensions = [
+                # Images
+                '.svg', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.bmp', '.tiff',
+                # Videos
+                '.mp4', '.avi', '.mov', '.wmv', '.flv', '.webm',
+                # Audio
+                '.mp3', '.wav', '.flac', '.aac', '.ogg',
+                # Fonts
+                '.ttf', '.otf', '.woff', '.woff2', '.eot',
+                # Documents
+                '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+                # Archives
+                '.zip', '.rar', '.7z', '.tar', '.gz',
+                # Binaries
+                '.exe', '.dll', '.so', '.dylib'
+            ]
+            if any(file["filename"].lower().endswith(ext) for ext in asset_extensions):
+                print(f"[DEBUG] Skipping asset/binary file: {file['filename']}")
+                continue
             file_names.add(file["filename"])
 
         print(f"[DEBUG] File names to process: {file_names}")
@@ -172,6 +192,25 @@ def fetch_repo_context(repo_name: str, pr_number: int, target_file: str, pr_info
             # Skip GitHub workflow and config files
             if file.filename.startswith('.github/'):
                 continue
+            # Skip asset and binary files (don't need in context)
+            asset_extensions = [
+                # Images
+                '.svg', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.bmp', '.tiff',
+                # Videos
+                '.mp4', '.avi', '.mov', '.wmv', '.flv', '.webm',
+                # Audio
+                '.mp3', '.wav', '.flac', '.aac', '.ogg',
+                # Fonts
+                '.ttf', '.otf', '.woff', '.woff2', '.eot',
+                # Documents
+                '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+                # Archives
+                '.zip', '.rar', '.7z', '.tar', '.gz',
+                # Binaries
+                '.exe', '.dll', '.so', '.dylib'
+            ]
+            if any(file.filename.lower().endswith(ext) for ext in asset_extensions):
+                continue
             try:
                 file_content = repo.get_contents(file.filename, ref=ref)
                 
@@ -225,6 +264,25 @@ def fetch_dynamic_context(target_file: str, dynamic_context_cache: Dict[str, str
         if file_name.endswith("package-lock.json") or file_name.endswith("package.lock.json"):
             continue
         if file_name.startswith('.github/'):
+            continue
+        # Skip asset and binary files (don't need in context)
+        asset_extensions = [
+            # Images
+            '.svg', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.bmp', '.tiff',
+            # Videos
+            '.mp4', '.avi', '.mov', '.wmv', '.flv', '.webm',
+            # Audio
+            '.mp3', '.wav', '.flac', '.aac', '.ogg',
+            # Fonts
+            '.ttf', '.otf', '.woff', '.woff2', '.eot',
+            # Documents
+            '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+            # Archives
+            '.zip', '.rar', '.7z', '.tar', '.gz',
+            # Binaries
+            '.exe', '.dll', '.so', '.dylib'
+        ]
+        if any(file_name.lower().endswith(ext) for ext in asset_extensions):
             continue
             
         # Get the file content from dynamic cache
@@ -289,6 +347,26 @@ def initialize_dynamic_context_cache(repo_name: str, pr_number: int, pr_info=Non
                 continue
             if file.filename.startswith('.github/'):
                 print(f"[Step3] Skipping GitHub config file: {file.filename}")
+                continue
+            # Skip asset and binary files (don't need in context)
+            asset_extensions = [
+                # Images
+                '.svg', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.bmp', '.tiff',
+                # Videos
+                '.mp4', '.avi', '.mov', '.wmv', '.flv', '.webm',
+                # Audio
+                '.mp3', '.wav', '.flac', '.aac', '.ogg',
+                # Fonts
+                '.ttf', '.otf', '.woff', '.woff2', '.eot',
+                # Documents
+                '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+                # Archives
+                '.zip', '.rar', '.7z', '.tar', '.gz',
+                # Binaries
+                '.exe', '.dll', '.so', '.dylib'
+            ]
+            if any(file.filename.lower().endswith(ext) for ext in asset_extensions):
+                print(f"[Step3] Skipping asset/binary file: {file.filename}")
                 continue
                 
             pr_files.add(file.filename)
@@ -808,13 +886,21 @@ You are fixing package.json dependency issues. The most common npm install error
 
 🔍 **CRITICAL INSTRUCTIONS:**
 1. READ the npm error message VERY CAREFULLY to identify the exact problematic package and version
-2. For "No matching version found" errors: Lower the version number to one that exists
-   - Example: If husky@^9.6.2 fails, try husky@^9.0.6 or husky@^8.0.0
-   - Example: If lint-staged@^16.3.0 fails, try lint-staged@^15.0.0 or lint-staged@^14.0.0
+2. For "No matching version found" errors: **ALWAYS LOWER the version number - NEVER GO UP!**
+   - ⚠️ **LOGIC**: If version 9.34 doesn't exist, then 9.35 (released later) also won't exist!
+   - ✅ **CORRECT**: If husky@^9.6.2 fails → try husky@^9.0.0 or husky@^8.0.0 (going DOWN)
+   - ✅ **CORRECT**: If lint-staged@^16.3.0 fails → try lint-staged@^15.0.0 or lint-staged@^14.0.0 (going DOWN)
+   - ❌ **NEVER DO**: If eslint@^9.34.0 fails → DON'T try eslint@^9.35.0 (that would be going UP!)
+   - 🎯 **STRATEGY**: Drop major/minor version significantly when a version doesn't exist
 3. PRESERVE all functionality - don't remove packages unless they're truly unnecessary
 4. Use CONSERVATIVE version ranges - better to be too low than too high
 5. Keep JSON structure clean and valid
 6. ONLY change the packages/versions that are causing the specific error
+
+⚠️ **VERSION CORRECTION RULES:**
+- If a version doesn't exist, ALWAYS try a LOWER version that is known to be stable
+- Use stable major versions (e.g., ^8.0.0, ^7.0.0) rather than bleeding edge
+- When in doubt, go back to LTS or well-established versions
 
 Return your response in this EXACT format:
 
@@ -862,6 +948,105 @@ IMPORTANT: Return ONLY the corrected package.json in the code block, not the ori
                     
     except Exception as e:
         print(f"[LocalRepo] ❌ Error during LLM package.json correction: {e}")
+        return None
+
+async def fix_package_json_for_build_errors(package_json_content, build_error, package_dir_path, pr_info):
+    """
+    Use LLM to fix package.json based on build errors that indicate missing dependencies.
+    Returns corrected package.json content or None if correction fails.
+    """
+    if not pr_info:
+        print("[LocalRepo] 🔧 No PR info available for LLM package.json build error correction")
+        return None
+    
+    print(f"[LocalRepo] 🤖 Using LLM to fix package.json for build dependency errors...")
+    
+    # Create package.json correction prompt for build errors
+    build_error_package_prompt = f"""You are an expert package.json dependency resolver. A build failed with errors indicating missing dependencies:
+
+---
+BUILD ERROR:
+{build_error}
+---
+
+Current package.json content:
+```json
+{package_json_content}
+```
+
+🔍 **BUILD ERROR ANALYSIS:**
+The build errors indicate missing dependencies. Common patterns:
+1. **"Cannot find module 'package-name'"** - The package is missing from dependencies
+2. **"Cannot find module 'package-name' or its corresponding type declarations"** - Missing package AND its @types/* package
+3. **"Cannot find type definition file for 'node'"** - Missing @types/node in devDependencies
+
+📦 **DEPENDENCY PHILOSOPHY: More dependencies = More problems**
+- Only add dependencies that are ACTUALLY NEEDED based on the build errors
+- Do NOT add speculative dependencies
+- Be CONSERVATIVE - only fix what's broken
+
+🔧 **CRITICAL INSTRUCTIONS:**
+1. ANALYZE the build error to identify exactly which packages are missing
+2. ADD missing packages to the appropriate section:
+   - Runtime dependencies → "dependencies" 
+   - Type definitions → "devDependencies" (all @types/* packages)
+   - Development tools → "devDependencies"
+3. For missing type declarations, add both the package AND its @types/* if needed
+4. Use CONSERVATIVE versions - stable, well-tested versions
+5. Do NOT remove existing dependencies unless they're clearly wrong
+6. Keep JSON structure clean and valid
+
+**Examples of fixes:**
+- Error: "Cannot find module 'react-router-dom'" → Add "react-router-dom": "^6.8.0" to dependencies
+- Error: "Cannot find module 'react-router-dom' or its corresponding type declarations" → Add both the package AND "@types/react-router-dom" if needed
+- Error: "Cannot find type definition file for 'node'" → Add "@types/node": "^18.0.0" to devDependencies
+
+Return your response in this EXACT format:
+
+### Analysis:
+- Brief explanation of what dependencies were missing and what you added
+
+### Fixed package.json:
+```json
+<CORRECTED PACKAGE.JSON CONTENT HERE>
+```
+
+IMPORTANT: Return ONLY the corrected package.json in the code block, not the original."""
+
+    try:
+        # Use the existing MCP infrastructure
+        server_params = StdioServerParameters(command="python", args=["server.py"])
+        
+        async with stdio_client(server_params) as (read_stream, write_stream):
+            async with ClientSession(read_stream, write_stream) as session:
+                await session.initialize()
+                
+                # Call LLM for package.json correction based on build errors
+                result = await asyncio.wait_for(
+                    session.call_tool("codegen", arguments={"prompt": build_error_package_prompt}),
+                    timeout=120  # 2 minute timeout for package.json correction
+                )
+                
+                # Extract response
+                response = extract_response_content(result, "package_json_build_error_correction")
+                
+                # Parse the corrected package.json
+                corrected_json = extract_updated_code(response)
+                if corrected_json:
+                    # Validate it's valid JSON
+                    try:
+                        json.loads(corrected_json)
+                        print(f"[LocalRepo] ✅ LLM provided valid package.json correction for build errors")
+                        return corrected_json
+                    except json.JSONDecodeError as e:
+                        print(f"[LocalRepo] ❌ LLM correction produced invalid JSON: {e}")
+                        return None
+                else:
+                    print(f"[LocalRepo] ❌ Could not extract corrected package.json from LLM response")
+                    return None
+                    
+    except Exception as e:
+        print(f"[LocalRepo] ❌ Error during LLM package.json build error correction: {e}")
         return None
 
 async def fix_build_errors_with_llm(build_error, affected_files, package_dir_path, pr_info):
@@ -912,21 +1097,26 @@ Affected files that need to be fixed:
     - Solution: Remove the unused import from the import statement
     - Example: If `useEffect` is imported but not used, remove it from the React import
 
- 2. **Cannot find module errors** (`Cannot find module 'package-name'`)
+ 2. **Type-only Import Errors** (`'X' is a type and must be imported using a type-only import when 'verbatimModuleSyntax' is enabled`)
+    - Solution: Change regular imports to type-only imports for types
+    - Example: Change 'import {{ FormEvent }}' to 'import type {{ FormEvent }}'
+    - Only applies to TypeScript types, not runtime values
+
+ 3. **Cannot find module errors** (`Cannot find module 'package-name'`)
     - Solution: The dependency is missing from package.json or the import path is wrong
     - Check if the module should be available and fix the import path
 
- 3. **TypeScript Configuration Errors** (tsconfig.json issues)
+ 4. **TypeScript Configuration Errors** (tsconfig.json issues)
     - **Unknown compiler option**: Remove unsupported options like `noUncheckedSideEffectImports`
     - **Invalid target values**: Use valid ES targets like 'es2020', 'es2021', 'es2022', 'esnext'
     - **Missing required options**: Add `"incremental": true` when using `tsBuildInfoFile`
     - **Type definition errors**: Fix `types` array or add missing @types/* packages
 
- 4. **TypeScript type definition errors** (`Cannot find type definition file for 'node'`)
+ 5. **TypeScript type definition errors** (`Cannot find type definition file for 'node'`)
     - Solution: Remove 'node' from types array if @types/node is not installed
     - Or ensure @types/node is properly listed in package.json devDependencies
 
- 5. **File path errors** (incorrect relative/absolute paths)
+ 6. **File path errors** (incorrect relative/absolute paths)
     - Solution: Fix the import paths to point to existing files
     - Use correct case sensitivity
 
@@ -1354,7 +1544,78 @@ def run_npm_build_with_error_correction(repo_path, package_json_files, regenerat
             # Combine error output for analysis
             full_build_error = f"STDOUT:\n{result.stdout}\n\nSTDERR:\n{result.stderr}"
             
-            # Extract affected files from the error message
+            # Check if this is a dependency-related build error
+            is_dependency_error = any(keyword in full_build_error.lower() for keyword in [
+                'cannot find module', 'module not found', 'missing dependency', 
+                'package not found', 'type declarations', 'cannot resolve'
+            ])
+            
+            if is_dependency_error:
+                print(f"[LocalRepo] 🔍 Detected dependency-related build error. Checking package.json...")
+                
+                # Try to fix package.json first for dependency errors
+                package_json_path = os.path.join(package_dir_path, "package.json") 
+                if os.path.exists(package_json_path):
+                    try:
+                        with open(package_json_path, "r", encoding="utf-8") as f:
+                            current_package_json = f.read()
+                        
+                        print(f"[LocalRepo] 🤖 Using LLM to fix package.json for dependency errors...")
+                        
+                        # Use LLM to fix package.json based on build errors
+                        corrected_package_json = asyncio.run(
+                            fix_package_json_for_build_errors(
+                                current_package_json,
+                                full_build_error,
+                                package_dir_path,
+                                pr_info
+                            )
+                        )
+                        
+                        if corrected_package_json and corrected_package_json.strip() != current_package_json.strip():
+                            # Write corrected package.json
+                            with open(package_json_path, "w", encoding="utf-8") as f:
+                                f.write(corrected_package_json)
+                            
+                            print(f"[LocalRepo] ✅ Updated package.json to fix dependency errors")
+                            
+                            # Update regenerated_files with the correction
+                            relative_package_path = os.path.join(package_dir, "package.json") if package_dir != "." else "package.json"
+                            regenerated_files[relative_package_path] = {
+                                "old_code": current_package_json,
+                                "changes": f"LLM-corrected package.json to fix build dependency errors (attempt {attempt})",
+                                "updated_code": corrected_package_json
+                            }
+                            
+                            # Run npm install again with the updated package.json
+                            print(f"[LocalRepo] 📦 Running npm install after package.json update...")
+                            npm_install_success = run_npm_install_with_error_correction(
+                                package_dir_path, relative_package_path, repo_path, regenerated_files, pr_info
+                            )
+                            
+                            if npm_install_success:
+                                print(f"[LocalRepo] ✅ npm install succeeded after package.json update")
+                                
+                                # Retry build with updated dependencies
+                                print(f"[LocalRepo] 🔄 Retrying npm run build after dependency update...")
+                                result = attempt_npm_build(package_dir_path)
+                                
+                                if result is not None and result.returncode == 0:
+                                    print(f"[LocalRepo] 🎉 npm run build succeeded after fixing dependencies!")
+                                    build_results.append(f"{package_file}: SUCCESS (after dependency fix in attempt {attempt})")
+                                    build_success = True
+                                    break
+                                else:
+                                    print(f"[LocalRepo] ⚠️ Build still failed after dependency fix, continuing with source code corrections...")
+                            else:
+                                print(f"[LocalRepo] ❌ npm install failed after package.json update")
+                        else:
+                            print(f"[LocalRepo] ⚠️ LLM didn't change package.json or correction failed")
+                            
+                    except Exception as e:
+                        print(f"[LocalRepo] ❌ Error trying to fix package.json for dependency errors: {e}")
+            
+            # Extract affected files from the error message (for source code fixes)
             affected_files = extract_affected_files_from_error(full_build_error, package_dir_path)
             
             if not affected_files:
