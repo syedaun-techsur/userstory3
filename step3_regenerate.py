@@ -981,17 +981,8 @@ async def fix_package_json_with_web_search(package_json_content, npm_error, pack
     
     print(f"[LocalRepo] 🌐 Using OpenAI with web search to fix package.json errors...")
     
-    # Check if this is a version-related error that would benefit from web search
-    version_error_indicators = [
-        'no matching version found', 'etarget', 'notarget', 'version that doesn\'t exist',
-        'package version that doesn\'t exist', 'cannot find version'
-    ]
-    
-    is_version_error = any(indicator in npm_error.lower() for indicator in version_error_indicators)
-    
-    if not is_version_error:
-        print("[LocalRepo] 🔄 Not a version error - using regular LLM instead of web search")
-        return await fix_package_json_with_llm(package_json_content, npm_error, package_file_path, pr_info)
+    # Always use web search for npm install errors as requested by user
+    print(f"[LocalRepo] 🌐 Using web search for all npm install errors as requested...")
     
     # Create web search prompt for npm install errors
     web_search_prompt = f"""I'm getting npm install errors related to package versions. Here's the exact error:
@@ -1191,17 +1182,8 @@ async def fix_package_json_for_build_errors_with_web_search(package_json_content
     
     print(f"[LocalRepo] 🌐 Using OpenAI with web search to fix package.json for build dependency errors...")
     
-    # Check if this is a dependency-related error that would benefit from web search
-    dependency_error_indicators = [
-        'cannot find module', 'module not found', 'missing dependency', 
-        'package not found', 'type declarations', 'cannot resolve'
-    ]
-    
-    is_dependency_error = any(indicator in build_error.lower() for indicator in dependency_error_indicators)
-    
-    if not is_dependency_error:
-        print("[LocalRepo] 🔄 Not a dependency error - using regular LLM instead of web search")
-        return await fix_package_json_for_build_errors(package_json_content, build_error, package_dir_path, pr_info)
+    # Always use web search for build dependency errors as requested by user
+    print(f"[LocalRepo] 🌐 Using web search for all build dependency errors as requested...")
     
     # Create web search prompt for build dependency errors
     web_search_prompt = f"""I'm getting build errors indicating missing dependencies. Here's the exact error:
@@ -1496,19 +1478,8 @@ async def fix_build_errors_with_web_search(build_error, affected_files, package_
     
     print(f"[LocalRepo] 🌐 Using OpenAI with web search to fix build errors...")
     
-    # Check if this is a TypeScript configuration error that would benefit from web search
-    config_error_indicators = [
-        'tsconfig', 'unknown compiler option', 'option cannot be specified',
-        'allowImportingTsExtensions', 'composite', 'noEmit', 'emitDeclarationOnly',
-        'verbatimModuleSyntax', 'importsNotUsedAsValues', 'strictNullChecks',
-        'exactOptionalPropertyTypes', 'tsBuildInfoFile', 'incremental'
-    ]
-    
-    is_config_error = any(indicator in build_error.lower() for indicator in config_error_indicators)
-    
-    if not is_config_error:
-        print("[LocalRepo] 🔄 Not a configuration error - using regular LLM instead of web search")
-        return await fix_build_errors_with_llm(build_error, affected_files, package_dir_path, pr_info)
+    # Always use web search for build errors as requested by user
+    print(f"[LocalRepo] 🌐 Using web search for all build errors as requested...")
     
     # Analyze the build error to identify problematic files
     affected_file_contents = {}
@@ -1531,20 +1502,21 @@ async def fix_build_errors_with_web_search(build_error, affected_files, package_
     for file_path, content in affected_file_contents.items():
         files_context += f"\n\n--- {file_path} ---\n```json\n{content}\n```"
     
-    web_search_prompt = f"""I'm getting TypeScript build errors and need help fixing the configuration. Here are the exact errors:
+    web_search_prompt = f"""I'm getting build errors and need help fixing them. Here are the exact errors:
 
 {build_error}
 
-Current configuration files:
+Current files that need fixing:
 {files_context}
 
-Please search for the latest TypeScript configuration best practices and help me fix these specific errors. I need:
-1. Proper TypeScript compiler options that work together
-2. Correct settings for modern TypeScript projects with Vite
-3. How to fix "allowImportingTsExtensions" errors
-4. Proper project reference configurations
+Please search for the latest information and help me fix these specific errors. I need:
+1. Current API and syntax for the packages/libraries involved
+2. Proper TypeScript/JavaScript usage patterns
+3. How to fix import/export errors and missing members
+4. Compatible version information and breaking changes
+5. Modern best practices for the technologies involved
 
-Please provide the corrected configuration files."""
+Please provide the corrected files with proper imports, exports, and syntax."""
 
     try:
         # Use OpenAI Responses API with web search
