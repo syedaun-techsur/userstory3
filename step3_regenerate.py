@@ -1,3 +1,27 @@
+"""
+Step 3: AI Code Regeneration with Real-Time Web Search
+
+This module implements intelligent code regeneration using:
+1. 🌐 REAL-TIME WEB SEARCH for latest practices and patterns
+2. 🔄 Dynamic context caching for progressive refinement
+3. 🛠️ Intelligent error correction with web search feedback loops
+4. 📦 Dependency optimization and build validation
+
+Key Features:
+- Web search for current best practices, security patterns, and API changes
+- Automatic fallback from web search to MCP when OpenAI is unavailable
+- Progressive context building where later files see refined versions of earlier files
+- Intelligent package.json dependency analysis with real-time version checking
+- Build error correction with web search for latest solutions
+- Local repository processing with npm install and build validation
+
+Web Search Integration:
+- Primary code generation uses OpenAI with web search when available
+- All error correction flows use web search to find current solutions
+- Package.json files get comprehensive dependency analysis via web search
+- Build errors are resolved using latest documentation and patterns
+"""
+
 import re
 import os
 import asyncio
@@ -9,7 +33,7 @@ from mcp.client.stdio import stdio_client
 from mcp import StdioServerParameters
 from dotenv import load_dotenv
 
-# OpenAI for web search (build error correction only)
+# OpenAI for web search (code generation + error correction)
 try:
     import openai
     from openai import OpenAI
@@ -17,7 +41,7 @@ try:
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
     if OPENAI_API_KEY:
         OPENAI_CLIENT = OpenAI(api_key=OPENAI_API_KEY)
-        print(f"[DEBUG] ✅ OpenAI client initialized for web search")
+        print(f"[DEBUG] ✅ OpenAI client initialized for web search (code generation + error correction)")
     else:
         print(f"[DEBUG] ⚠️ OPENAI_API_KEY not found - web search disabled")
 except ImportError:
@@ -566,7 +590,7 @@ def extract_response_content(result, file_name: str) -> str:
         return str(content_item)
 
 def extract_changes(response: str, file_name: str) -> str:
-    """Extract changes section from AI response"""
+    """Extract changes section from AI response and clean up URLs/citations"""
     changes = ""
     
     # First try to find changes outside <think> block
@@ -588,6 +612,40 @@ def extract_changes(response: str, file_name: str) -> str:
         changes = re.sub(r'```[a-zA-Z0-9]*\n[\s\S]*?```', '', changes)
         changes = re.sub(r'\n\s*\n', '\n', changes)  # Clean up extra newlines
         changes = changes.strip()
+    
+    # Clean up URLs and citations from web search
+    if changes:
+        print(f"[Step3] 🧹 Cleaning up URLs and citations from changes for {file_name}...")
+        
+        # Remove URLs in parentheses with citations
+        # Pattern: ([domain.com](url)) or ([description](url))
+        changes = re.sub(r'\s*\(\[[^\]]+\]\([^)]+\)\)', '', changes)
+        
+        # Remove standalone URLs in parentheses
+        # Pattern: (https://example.com/...)
+        changes = re.sub(r'\s*\(https?://[^)]+\)', '', changes)
+        
+        # Remove bare URLs
+        changes = re.sub(r'https?://[^\s)]+', '', changes)
+        
+        # Remove citation patterns like ([source.com](url))
+        changes = re.sub(r'\s*\([^)]*\.com[^)]*\)', '', changes)
+        
+        # Remove utm_source parameters that might remain
+        changes = re.sub(r'[?&]utm_source=[^)\s]*', '', changes)
+        
+        # Clean up any double spaces or trailing periods from URL removal
+        changes = re.sub(r'\s{2,}', ' ', changes)  # Multiple spaces to single space
+        changes = re.sub(r'\s*\.\s*\n', '.\n', changes)  # Clean up trailing periods
+        changes = re.sub(r'\n\s*\n', '\n', changes)  # Clean up extra newlines
+        
+        # Clean up any remaining markdown artifacts
+        changes = re.sub(r'\[\]', '', changes)  # Empty markdown links
+        changes = re.sub(r'\(\)', '', changes)  # Empty parentheses
+        
+        changes = changes.strip()
+        
+        print(f"[Step3] ✅ Cleaned changes section for {file_name}")
     
     return changes
 
@@ -724,6 +782,223 @@ async def process_single_file(session, file_name: str, old_code: str, requiremen
             "token_usage": (0, 0, 0)
         }
 
+async def process_single_file_with_web_search(file_name: str, old_code: str, requirements: str, pr_info: Optional[dict] = None, dynamic_context_cache: Optional[Dict[str, str]] = None, pr_files: Optional[Set[str]] = None, processed_files: Optional[Set[str]] = None) -> dict:
+    """Process a single file through AI refinement pipeline using OpenAI with web search for latest practices"""
+    try:
+        print(f"[Step3] 🌐 Processing file with WEB SEARCH: {file_name}")
+        
+        if not OPENAI_CLIENT:
+            print(f"[Step3] ⚠️ OpenAI client not available - falling back to regular MCP")
+            # We need to use MCP with a session, so this function should only be called when OpenAI is available
+            # For fallback, the main function should call process_single_file directly
+            raise Exception("OpenAI client not available - use regular MCP process_single_file instead")
+        
+        # Fetch context using dynamic cache if available
+        if dynamic_context_cache is not None and pr_files is not None:
+            print(f"[Step3] Using dynamic context for {file_name}")
+            context = fetch_dynamic_context(file_name, dynamic_context_cache, pr_files, processed_files)
+        else:
+            print(f"[Step3] Falling back to static context for {file_name}")
+            if pr_info is None:
+                raise ValueError("pr_info cannot be None")
+            repo_name = pr_info["repo_name"]
+            pr_number = pr_info["pr_number"]
+            context = fetch_repo_context(repo_name, pr_number, file_name, pr_info)
+        
+        # Create web search enhanced prompt
+        web_search_prompt = compose_web_search_prompt(requirements, old_code, file_name, context)
+        
+        print(f"[Step3] 🌐 Calling OpenAI with web search for {file_name}...")
+        
+        try:
+            # Use OpenAI Responses API with web search
+            response = await asyncio.to_thread(
+                OPENAI_CLIENT.responses.create,
+                model="gpt-4.1-mini",
+                tools=[{"type": "web_search_preview"}],
+                input=web_search_prompt
+            )
+            
+            print(f"[Step3] 🌐 OpenAI web search call completed for {file_name}")
+            
+            # Extract the response text from Responses API
+            if hasattr(response, 'output_text'):
+                response_text = response.output_text
+            else:
+                print(f"[Step3] ❌ Could not extract response from OpenAI web search")
+                response_text = ""
+            
+            # Extract changes and updated code from web search response
+            changes = extract_changes(response_text, file_name)
+            updated_code = extract_updated_code(response_text)
+            updated_code = cleanup_extracted_code(updated_code)
+            
+            # Fallback if no updated code found
+            if not updated_code:
+                print(f"⚠️ WARNING: Could not extract updated code from web search for {file_name}. Using original code.")
+                updated_code = old_code
+            
+            print(f"[Step3] ✅ Successfully processed {file_name} with web search")
+            
+            return {
+                "old_code": old_code,
+                "changes": changes,
+                "updated_code": updated_code,
+                "token_usage": (0, 0, 0)  # Web search doesn't provide token usage
+            }
+            
+        except Exception as e:
+            print(f"[Step3] ❌ Error with OpenAI web search for {file_name}: {e}")
+            print(f"[Step3] 🔄 Web search failed - returning original code")
+            # Return original code if web search fails
+            return {
+                "old_code": old_code,
+                "changes": f"Web search failed: {str(e)}",
+                "updated_code": old_code,
+                "token_usage": (0, 0, 0)
+            }
+        
+    except Exception as e:
+        print(f"[Step3] Error processing file {file_name} with web search: {e}")
+        return {
+            "old_code": old_code,
+            "changes": f"Error during web search processing: {str(e)}",
+            "updated_code": old_code,
+            "token_usage": (0, 0, 0)
+        }
+
+def compose_web_search_prompt(requirements: str, code: str, file_name: str, context: str) -> str:
+    """Create a web search enhanced prompt for code generation with latest practices"""
+    # Get the file extension for the AI to understand the language
+    file_extension = file_name.split('.')[-1].lower()
+    
+    # Check if this is a package.json file for special dependency handling
+    is_package_json = file_name.endswith('package.json')
+    
+    base_prompt = (
+        f"You are an expert AI code reviewer with access to real-time web search. Your job is to improve and refactor ONLY the given file `{file_name}` "
+        f"using the latest coding standards, best practices, and current technology trends.\n\n"
+        f"REQUIREMENTS FROM PROJECT:\n{requirements}\n\n"
+        f"---\nRepository Context (other files for reference):\n{context}\n"
+        f"---\nCurrent Code ({file_name} - {file_extension} file):\n```{file_extension}\n{code}\n```\n"
+    )
+    
+    web_search_instructions = (
+        f"\n---\n🌐 **WEB SEARCH ENHANCEMENT INSTRUCTIONS:**\n"
+        f"You have access to real-time web search. Use it to ensure your code follows the LATEST practices:\n\n"
+        f"1. **SEARCH for current best practices** for the specific technology/framework used in this file\n"
+        f"2. **VERIFY latest syntax** and API changes for the libraries/frameworks involved\n"
+        f"3. **CHECK for security vulnerabilities** and modern security practices\n"
+        f"4. **FIND performance optimization** techniques for the specific technology\n"
+        f"5. **DISCOVER breaking changes** in recent versions of dependencies\n"
+        f"6. **LOOK UP accessibility (a11y)** standards and modern requirements\n"
+        f"7. **RESEARCH testing patterns** and modern testing approaches\n"
+        f"8. **VERIFY TypeScript best practices** if applicable\n"
+        f"9. **CHECK modern React patterns** if it's a React component\n"
+        f"10. **FIND current ESLint/Prettier** configuration standards\n\n"
+        f"🔍 **SEARCH STRATEGY:**\n"
+        f"- Search for '{file_extension} best practices 2024'\n"
+        f"- Search for specific library/framework + 'latest version changes'\n"
+        f"- Search for 'modern {file_extension} patterns'\n"
+        f"- Search for security and performance optimizations\n"
+        f"- Verify any imports/dependencies are using latest stable versions\n\n"
+        f"🎯 **ALWAYS PRIORITIZE:**\n"
+        f"- **CURRENT/LATEST** information over outdated practices\n"
+        f"- **SECURITY** - implement latest security best practices\n"
+        f"- **PERFORMANCE** - use modern optimization techniques\n"
+        f"- **ACCESSIBILITY** - follow current a11y standards\n"
+        f"- **MAINTAINABILITY** - use patterns that are currently recommended\n"
+        f"- **TYPE SAFETY** - implement strong typing where applicable\n"
+    )
+    
+    if is_package_json:
+        dependency_instructions = (
+            f"\n---\n🔍 **PACKAGE.JSON WEB SEARCH ANALYSIS:**\n"
+            f"This is a package.json file. Use web search to perform COMPREHENSIVE dependency analysis:\n\n"
+            f"1. **SEARCH for each dependency** to verify:\n"
+            f"   - Current stable version (not just latest - check for stability)\n"
+            f"   - Breaking changes in recent versions\n"
+            f"   - Security vulnerabilities\n"
+            f"   - Deprecated packages (search for alternatives)\n"
+            f"   - Peer dependency requirements\n\n"
+            f"2. **VERIFY compatibility** between packages:\n"
+            f"   - Search for known conflicts between major dependencies\n"
+            f"   - Check React/Vue/Angular version compatibility\n"
+            f"   - Verify TypeScript version compatibility\n\n"
+            f"3. **DISCOVER modern alternatives** to outdated packages:\n"
+            f"   - Search for 'alternatives to [package-name] 2024'\n"
+            f"   - Look for more maintained/performant options\n"
+            f"   - Check GitHub stars, maintenance activity\n\n"
+            f"4. **ANALYZE the context files** to see what's actually imported and used\n"
+            f"5. **REMOVE unused dependencies** that aren't imported anywhere\n"
+            f"6. **ADD missing dependencies** that are imported but not listed\n"
+            f"7. **UPDATE versions** to current stable releases\n"
+            f"8. **ORGANIZE properly** (dependencies vs devDependencies)\n\n"
+            f"🚨 **CRITICAL WEB SEARCH QUERIES:**\n"
+            f"- '[package-name] latest stable version 2024'\n"
+            f"- '[package-name] security vulnerabilities'\n"
+            f"- '[package-name] breaking changes'\n"
+            f"- 'alternatives to [package-name] 2024'\n"
+            f"- 'React/TypeScript/Node.js version compatibility 2024'\n\n"
+            f"💡 **PHILOSOPHY**: Use web search to make INFORMED decisions about dependencies\n"
+            f"- Only include packages that are ACTIVELY MAINTAINED\n"
+            f"- Prefer packages with strong community support\n"
+            f"- Choose stable versions over bleeding edge\n"
+            f"- Security is paramount - search for any CVEs\n"
+        )
+    else:
+        dependency_instructions = (
+            f"\n---\n📦 **DEPENDENCY & IMPORT WEB SEARCH VERIFICATION:**\n"
+            f"For import statements and dependencies:\n"
+            f"1. **SEARCH for current import syntax** for each library/framework used\n"
+            f"2. **VERIFY API changes** in recent versions of imported packages\n"
+            f"3. **CHECK for deprecated imports** and find modern replacements\n"
+            f"4. **DISCOVER new features** in current versions that could improve the code\n"
+            f"5. **FIND breaking changes** that might affect imports\n\n"
+            f"🚫 **BUILD ERROR PREVENTION WITH WEB SEARCH:**\n"
+            f"1. **Search for common build errors** with the specific framework/library\n"
+            f"2. **Verify TypeScript configuration** best practices for 2024\n"
+            f"3. **Check for import/export issues** in current versions\n"
+            f"4. **Search for linting rule updates** and modern ESLint configs\n"
+            f"5. **Find accessibility patterns** for UI components\n\n"
+            f"💡 **MODERN CODE PATTERNS:**\n"
+            f"- Search for 'modern {file_extension} patterns 2024'\n"
+            f"- Look up current React hooks best practices\n"
+            f"- Find latest TypeScript utility types\n"
+            f"- Check for new CSS-in-JS solutions\n"
+            f"- Verify current testing patterns\n"
+        )
+    
+    format_instructions = (
+        f"\n---\nPlease return the updated code and changes in the following EXACT format:\n"
+        f"### Changes:\n- A clean bullet-point summary of what was changed based on web search findings.\n\n"
+        f"### Updated Code:\n```{file_extension}\n<ONLY THE NEW/IMPROVED CODE HERE>\n```\n\n"
+        f"⚠️ **CRITICAL REQUIREMENTS:**\n"
+        f"1. **USE WEB SEARCH** to verify all suggestions and find latest practices\n"
+        f"2. **MENTION WEB SEARCH FINDINGS** in the changes section but keep it clean\n"
+        f"3. **DO NOT include URLs, links, or citations** in the changes section\n"
+        f"4. **Keep changes section professional** - no parenthetical references or links\n"
+        f"5. Do NOT use <think> tags or any other XML-like tags\n"
+        f"6. Provide bullet-point summary of changes under the `### Changes` heading\n"
+        f"7. Provide ONLY ONE code block under the `### Updated Code` heading\n"
+        f"8. Do NOT show the old code again in your response\n"
+        f"9. Do NOT suggest creating new files. Only update this file\n"
+        f"10. The response must start with `### Changes:` and end with the code block\n"
+        f"11. Return ONLY the improved/refactored code using LATEST practices\n"
+        f"12. Return the SAME TYPE of code as the original file ({file_extension})\n"
+        f"13. If the code already meets current best practices:\n"
+        f"    - In the ### Changes section, write: 'No changes needed - code follows current best practices.'\n"
+        f"    - In the ### Updated Code section, return the original code unchanged.\n"
+        f"14. **VERIFY with web search** before making any claims about best practices\n"
+        f"15. **CHANGES FORMAT**: Use simple, clean bullet points like:\n"
+        f"    - Enhanced accessibility with proper ARIA labels\n"
+        f"    - Updated to latest React patterns and hooks\n"
+        f"    - Improved error handling and validation\n"
+        f"    - Added TypeScript strict typing\n"
+    )
+    
+    return base_prompt + web_search_instructions + dependency_instructions + format_instructions
+
 async def regenerate_code_with_mcp(files: Dict[str, str], requirements: str, pr, pr_info=None) -> Dict[str, Dict[str, str]]:
     """Main function to regenerate code using MCP with dynamic context updates"""
     regenerated = {}
@@ -788,16 +1063,30 @@ async def regenerate_code_with_mcp(files: Dict[str, str], requirements: str, pr,
                     
                     print(f"[Step3] 📊 Context status: {len(processed_files)} files already refined, {total_files - current_file_number} files remaining")
                     
-                    file_result = await process_single_file(
-                        session, 
-                        file_name, 
-                        old_code, 
-                        requirements, 
-                        pr_info,
-                        dynamic_context_cache,
-                        pr_files,
-                        processed_files
-                    )
+                    # Use web search for code generation if available, otherwise fallback to MCP
+                    if OPENAI_CLIENT:
+                        print(f"[Step3] 🌐 Using web search for code generation: {file_name}")
+                        file_result = await process_single_file_with_web_search(
+                            file_name, 
+                            old_code, 
+                            requirements, 
+                            pr_info,
+                            dynamic_context_cache,
+                            pr_files,
+                            processed_files
+                        )
+                    else:
+                        print(f"[Step3] 🔧 Using regular MCP for code generation: {file_name}")
+                        file_result = await process_single_file(
+                            session, 
+                            file_name, 
+                            old_code, 
+                            requirements, 
+                            pr_info,
+                            dynamic_context_cache,
+                            pr_files,
+                            processed_files
+                        )
                     
                     # Extract token usage and accumulate
                     prompt_tokens, completion_tokens, tokens = file_result.pop("token_usage", (0, 0, 0))
@@ -818,14 +1107,16 @@ async def regenerate_code_with_mcp(files: Dict[str, str], requirements: str, pr,
                         print(f"[Step3] 📄 No changes for {file_name} - keeping original in cache")
                         processed_files.add(file_name)  # Still mark as processed even if no changes
 
-        # Print final summary with dynamic context benefits
-        print(f"[Step3] 🎉 AI processing completed with dynamic context and dependency optimization!")
+        # Print final summary with web search and dynamic context benefits
+        print(f"[Step3] 🎉 AI processing completed with WEB SEARCH, dynamic context and dependency optimization!")
         print(f"[Step3] 📊 Processing Summary:")
         print(f"[Step3]   - Total files processed: {len(regenerated)}")
         print(f"[Step3]   - Regular files refined: {len(regular_files)}")
         print(f"[Step3]   - Package.json files analyzed: {len(package_json_files)}")
+        print(f"[Step3]   - Web search enabled: {'✅ YES' if OPENAI_CLIENT else '❌ NO (OpenAI client not available)'}")
         print(f"[Step3]   - Dynamic context benefit: Later files used refined versions of earlier files")
         print(f"[Step3]   - Dependency optimization: Package.json files processed last with full context")
+        print(f"[Step3]   - Latest practices: {'✅ Using real-time web search' if OPENAI_CLIENT else '⚠️ Using static knowledge only'}")
         
         # Print final token usage and pricing
         print(f"[Step3] 💰 TOTAL TOKEN USAGE: prompt_tokens={total_prompt_tokens:,}, completion_tokens={total_completion_tokens:,}, total_tokens={total_tokens:,}")
@@ -981,8 +1272,8 @@ async def fix_package_json_with_web_search(package_json_content, npm_error, pack
     
     print(f"[LocalRepo] 🌐 Using OpenAI with web search to fix package.json errors...")
     
-    # Always use web search for npm install errors as requested by user
-    print(f"[LocalRepo] 🌐 Using web search for all npm install errors as requested...")
+    # Always use web search for npm install errors (default behavior)
+    print(f"[LocalRepo] 🌐 Using web search for npm install errors (latest practices enabled)...")
     
     # Create web search prompt for npm install errors
     web_search_prompt = f"""I'm getting npm install errors related to package versions. Here's the exact error:
@@ -1182,8 +1473,8 @@ async def fix_package_json_for_build_errors_with_web_search(package_json_content
     
     print(f"[LocalRepo] 🌐 Using OpenAI with web search to fix package.json for build dependency errors...")
     
-    # Always use web search for build dependency errors as requested by user
-    print(f"[LocalRepo] 🌐 Using web search for all build dependency errors as requested...")
+    # Always use web search for build dependency errors (default behavior)
+    print(f"[LocalRepo] 🌐 Using web search for build dependency errors (latest practices enabled)...")
     
     # Create web search prompt for build dependency errors
     web_search_prompt = f"""I'm getting build errors indicating missing dependencies. Here's the exact error:
@@ -1478,8 +1769,8 @@ async def fix_build_errors_with_web_search(build_error, affected_files, package_
     
     print(f"[LocalRepo] 🌐 Using OpenAI with web search to fix build errors...")
     
-    # Always use web search for build errors as requested by user
-    print(f"[LocalRepo] 🌐 Using web search for all build errors as requested...")
+    # Always use web search for build errors (default behavior)
+    print(f"[LocalRepo] 🌐 Using web search for build errors (latest practices enabled)...")
     
     # Analyze the build error to identify problematic files
     affected_file_contents = {}
@@ -1710,7 +2001,7 @@ def run_npm_install_with_error_correction(package_dir_path, package_file, repo_p
         
         print(f"[LocalRepo] 🤖 Sending error to LLM for analysis...")
         
-        # Use web search for version errors, regular LLM for others
+        # Always use web search for error correction
         try:
             corrected_package_json = asyncio.run(
                 fix_package_json_with_web_search(
@@ -1950,7 +2241,7 @@ def run_npm_build_with_error_correction(repo_path, package_json_files, regenerat
                         
                         print(f"[LocalRepo] 🤖 Using LLM to fix package.json for dependency errors...")
                         
-                        # Use web search to fix package.json based on build dependency errors
+                        # Always use web search to fix package.json based on build dependency errors
                         corrected_package_json = asyncio.run(
                             fix_package_json_for_build_errors_with_web_search(
                                 current_package_json,
@@ -2037,7 +2328,7 @@ def run_npm_build_with_error_correction(repo_path, package_json_files, regenerat
             
             print(f"[LocalRepo] 🎯 Identified affected files: {affected_files}")
             
-            # Use web search for TypeScript config errors, regular LLM for others
+            # Always use web search for build error correction
             try:
                 corrected_files = asyncio.run(
                     fix_build_errors_with_web_search(
@@ -2286,9 +2577,16 @@ def regenerate_files(pr_info):
     requirements_text = fetch_requirements_from_readme(REPO_NAME, pr['head']['ref'])  # type: ignore
     print(f"Requirements from README.md:\n{'-'*60}\n{requirements_text}\n{'-'*60}")
 
+    # Run AI refinement with web search integration
+    print(f"[Step3] 🌐 Starting AI refinement with real-time web search integration...")
     regenerated_files = asyncio.run(regenerate_code_with_mcp(files_for_update, requirements_text, pr, pr_info))
     
-    # Process files locally (clone repo, apply changes, generate lockfile)
+    # Process files locally (clone repo, apply changes, generate lockfile with web search error correction)
+    print(f"[Step3] 🏗️ Starting local processing with web search error correction...")
     regenerated_files = process_pr_with_local_repo(pr_info, regenerated_files)
+    
+    print(f"[Step3] ✅ Complete AI regeneration pipeline finished!")
+    print(f"[Step3] 🌐 Web search status: {'ENABLED' if OPENAI_CLIENT else 'DISABLED (OpenAI not available)'}")
+    print(f"[Step3] 📊 Files processed: {len(regenerated_files)}")
     
     return regenerated_files
