@@ -1,19 +1,28 @@
 """
-Step 3: AI Code Regeneration with Real-Time Web Search
+Step 3: AI Code Regeneration with Real-Time Web Search & Dependency Optimization
 
 This module implements intelligent code regeneration using:
 1. 🌐 REAL-TIME WEB SEARCH for latest practices and patterns
-2. 🔄 Dynamic context caching for progressive refinement
-3. 🛠️ Intelligent error correction with web search feedback loops
-4. 📦 Dependency optimization and build validation
+2. 🎯 DEPENDENCY-BASED CONTEXT optimization (only relevant imports)
+3. 🔄 Dynamic context caching for progressive refinement
+4. 🛠️ Intelligent error correction with web search feedback loops
+5. 📦 Smart package.json analysis with comprehensive dependency checking
 
 Key Features:
 - Web search for current best practices, security patterns, and API changes
+- DEPENDENCY OPTIMIZATION: Only includes files that are actually imported/referenced
 - Automatic fallback from web search to MCP when OpenAI is unavailable
 - Progressive context building where later files see refined versions of earlier files
 - Intelligent package.json dependency analysis with real-time version checking
 - Build error correction with web search for latest solutions
 - Local repository processing with npm install and build validation
+
+Context Optimization Strategy:
+- Regular files: Only get context from files they actually import/depend on
+- Package.json files: Get DEPENDENCY SUMMARY (lightweight context instead of all files)
+- External dependency tracking: Collects npm packages used across all files
+- Supports multiple languages: JS/TS, Python, CSS, HTML, and generic patterns
+- Dramatically reduces token usage while maintaining relevance
 
 Web Search Integration:
 - Primary code generation uses OpenAI with web search when available
@@ -72,6 +81,177 @@ github_direct = Github(GITHUB_TOKEN)
 print(f"[DEBUG] ✅ GitHub API client initialized")
 
 MAX_CONTEXT_CHARS = 4000000  # GPT-4.1 Mini has 1M+ token context window (1M tokens ≈ 4M chars)
+
+# External dependency tracking for package.json optimization
+EXTERNAL_DEPENDENCY_STORE = {}
+
+def extract_external_dependencies(file_path: str, file_content: str) -> Set[str]:
+    """
+    Extract external dependencies (npm packages) from a file's import statements.
+    Returns set of package names (not local file paths).
+    """
+    external_deps = set()
+    file_dir = os.path.dirname(file_path)
+    file_ext = file_path.split('.')[-1].lower()
+    
+    try:
+        if file_ext in ['js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs']:
+            external_deps.update(extract_js_ts_external_dependencies(file_content))
+        elif file_ext in ['py']:
+            external_deps.update(extract_python_external_dependencies(file_content))
+        elif file_ext in ['json']:
+            external_deps.update(extract_json_external_dependencies(file_content, file_path))
+        # Add more languages as needed
+        
+    except Exception as e:
+        print(f"[Step3] ⚠️ Error extracting external dependencies from {file_path}: {e}")
+    
+    return external_deps
+
+def extract_js_ts_external_dependencies(content: str) -> Set[str]:
+    """Extract external npm packages from JavaScript/TypeScript imports"""
+    external_deps = set()
+    
+    # Pattern to match import statements
+    import_patterns = [
+        # ES6 imports: import React from 'react'
+        r'import\s+.*?\s+from\s+[\'"`]([^\'"`]+)[\'"`]',
+        # Direct imports: import 'react'
+        r'import\s+[\'"`]([^\'"`]+)[\'"`]',
+        # Dynamic imports: import('react')
+        r'import\s*\(\s*[\'"`]([^\'"`]+)[\'"`]\s*\)',
+        # CommonJS require: require('react')
+        r'require\s*\(\s*[\'"`]([^\'"`]+)[\'"`]\s*\)',
+        # TypeScript imports: import type { } from 'react'
+        r'import\s+type\s+.*?\s+from\s+[\'"`]([^\'"`]+)[\'"`]',
+        # Re-exports: export * from 'react'
+        r'export\s+.*?\s+from\s+[\'"`]([^\'"`]+)[\'"`]',
+    ]
+    
+    for pattern in import_patterns:
+        matches = re.findall(pattern, content, re.IGNORECASE | re.MULTILINE)
+        for match in matches:
+            # Skip local/relative imports (start with ./ or ../)
+            if match.startswith(('./', '../', '/')):
+                continue
+            
+            # Extract package name (handle scoped packages like @types/node)
+            if match.startswith('@'):
+                # Scoped package: @types/node or @babel/core
+                parts = match.split('/')
+                if len(parts) >= 2:
+                    package_name = f"{parts[0]}/{parts[1]}"
+                else:
+                    package_name = parts[0]
+            else:
+                # Regular package: react, lodash, etc.
+                package_name = match.split('/')[0]
+            
+            external_deps.add(package_name)
+    
+    return external_deps
+
+def extract_python_external_dependencies(content: str) -> Set[str]:
+    """Extract external packages from Python imports"""
+    external_deps = set()
+    
+    # Python import patterns
+    import_patterns = [
+        r'from\s+([^\s.]+)\s+import',  # from package import
+        r'import\s+([^\s.,]+)',        # import package
+    ]
+    
+    for pattern in import_patterns:
+        matches = re.findall(pattern, content, re.MULTILINE)
+        for match in matches:
+            # Skip standard library and relative imports
+            if (match.startswith('.') or 
+                match in ['os', 'sys', 'json', 'typing', 'asyncio', 're', 'subprocess', 'datetime']):
+                continue
+            
+            # Extract main package name
+            package_name = match.split('.')[0]
+            external_deps.add(package_name)
+    
+    return external_deps
+
+def extract_json_external_dependencies(content: str, file_path: str) -> Set[str]:
+    """Extract dependencies from JSON files like package.json"""
+    external_deps = set()
+    
+    try:
+        data = json.loads(content)
+        
+        # For package.json files, extract dependencies
+        if file_path.endswith('package.json'):
+            for dep_type in ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']:
+                if dep_type in data:
+                    external_deps.update(data[dep_type].keys())
+        
+        # For tsconfig.json, extract @types packages
+        elif file_path.endswith('tsconfig.json'):
+            if 'compilerOptions' in data and 'types' in data['compilerOptions']:
+                for type_pkg in data['compilerOptions']['types']:
+                    if not type_pkg.startswith('@types/'):
+                        external_deps.add(f'@types/{type_pkg}')
+                    else:
+                        external_deps.add(type_pkg)
+    
+    except json.JSONDecodeError:
+        pass
+    
+    return external_deps
+
+def update_external_dependency_store(file_path: str, external_deps: Set[str]):
+    """Update the global external dependency store with dependencies from a file"""
+    if external_deps:
+        EXTERNAL_DEPENDENCY_STORE[file_path] = external_deps
+        print(f"[Step3] 📦 Tracked {len(external_deps)} external dependencies from {file_path}: {sorted(external_deps)}")
+    else:
+        print(f"[Step3] 📦 No external dependencies found in {file_path}")
+
+def get_dependency_summary_for_package_json() -> str:
+    """
+    Generate a lightweight dependency summary for package.json files.
+    Returns a summary of all external dependencies used across all files.
+    """
+    if not EXTERNAL_DEPENDENCY_STORE:
+        return "No external dependencies found in project files."
+    
+    # Aggregate all external dependencies
+    all_deps = set()
+    deps_by_file = {}
+    
+    for file_path, deps in EXTERNAL_DEPENDENCY_STORE.items():
+        all_deps.update(deps)
+        if deps:  # Only include files that have dependencies
+            deps_by_file[file_path] = sorted(deps)
+    
+    # Create summary
+    summary = f"""
+EXTERNAL DEPENDENCY SUMMARY
+===========================
+
+Total unique external packages used: {len(all_deps)}
+
+ALL EXTERNAL DEPENDENCIES:
+{', '.join(sorted(all_deps))}
+
+DEPENDENCIES BY FILE:
+"""
+    
+    for file_path, deps in deps_by_file.items():
+        summary += f"\n{file_path}:\n  - {', '.join(deps)}\n"
+    
+    summary += f"""
+DEPENDENCY ANALYSIS GUIDANCE:
+- Ensure all packages above are properly declared in package.json
+- Check for version conflicts between dependencies
+- Consider if any dependencies are missing or unused
+- Review if development dependencies are correctly categorized
+"""
+    
+    return summary
 
 def get_pr_by_number(repo_name: str, pr_number: int):
     """Get PR by number using direct GitHub API"""
@@ -280,10 +460,231 @@ def fetch_repo_context(repo_name: str, pr_number: int, target_file: str, pr_info
         
     return context
 
+def parse_file_dependencies(file_path: str, file_content: str, pr_files: Set[str]) -> Set[str]:
+    """
+    Parse a file's imports/dependencies and return the set of PR files it depends on.
+    
+    Args:
+        file_path: Path of the target file
+        file_content: Content of the target file
+        pr_files: Set of all files in the PR
+    
+    Returns:
+        Set of file paths from pr_files that this file depends on
+    """
+    dependencies = set()
+    file_dir = os.path.dirname(file_path)
+    
+    # Get file extension to determine parsing strategy
+    file_ext = file_path.split('.')[-1].lower()
+    
+    print(f"[Step3] 🔍 Parsing dependencies for {file_path} (type: {file_ext})")
+    
+    try:
+        if file_ext in ['js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs']:
+            # JavaScript/TypeScript files
+            dependencies.update(parse_js_ts_dependencies(file_content, file_dir, pr_files))
+        
+        elif file_ext in ['py']:
+            # Python files
+            dependencies.update(parse_python_dependencies(file_content, file_dir, pr_files))
+        
+        elif file_ext in ['css', 'scss', 'sass', 'less']:
+            # CSS files (imports other CSS files)
+            dependencies.update(parse_css_dependencies(file_content, file_dir, pr_files))
+        
+        elif file_ext in ['json'] and file_path.endswith('package.json'):
+            # Special case: package.json files don't have local dependencies
+            print(f"[Step3] 📦 package.json detected - no local dependencies to parse")
+            return set()  # Empty set - handled separately with dependency summary
+        
+        elif file_ext in ['html', 'htm']:
+            # HTML files (script tags, link tags)
+            dependencies.update(parse_html_dependencies(file_content, file_dir, pr_files))
+        
+        else:
+            # Unknown file type - check for common patterns
+            dependencies.update(parse_generic_dependencies(file_content, file_dir, pr_files))
+    
+    except Exception as e:
+        print(f"[Step3] ⚠️ Error parsing dependencies for {file_path}: {e}")
+    
+    print(f"[Step3] 🔗 Found {len(dependencies)} dependencies for {file_path}: {list(dependencies)}")
+    return dependencies
+
+def parse_js_ts_dependencies(content: str, file_dir: str, pr_files: Set[str]) -> Set[str]:
+    """Parse JavaScript/TypeScript import statements"""
+    dependencies = set()
+    
+    # Common import patterns
+    import_patterns = [
+        # ES6 imports
+        r'import\s+.*?\s+from\s+[\'"`]([^\'"`]+)[\'"`]',
+        r'import\s+[\'"`]([^\'"`]+)[\'"`]',
+        # Dynamic imports
+        r'import\s*\(\s*[\'"`]([^\'"`]+)[\'"`]\s*\)',
+        # CommonJS require
+        r'require\s*\(\s*[\'"`]([^\'"`]+)[\'"`]\s*\)',
+        # TypeScript specific
+        r'import\s+type\s+.*?\s+from\s+[\'"`]([^\'"`]+)[\'"`]',
+        # Re-exports
+        r'export\s+.*?\s+from\s+[\'"`]([^\'"`]+)[\'"`]',
+        # JSX/TSX component imports in comments or strings
+        r'\/\/\s*@filename:\s*([^\s]+)',
+    ]
+    
+    for pattern in import_patterns:
+        matches = re.findall(pattern, content, re.IGNORECASE | re.MULTILINE)
+        for match in matches:
+            resolved_path = resolve_import_path(match, file_dir, pr_files)
+            if resolved_path:
+                dependencies.add(resolved_path)
+    
+    return dependencies
+
+def parse_python_dependencies(content: str, file_dir: str, pr_files: Set[str]) -> Set[str]:
+    """Parse Python import statements"""
+    dependencies = set()
+    
+    # Python import patterns
+    import_patterns = [
+        r'from\s+([^\s]+)\s+import',
+        r'import\s+([^\s,]+)',
+        r'from\s+\.\s*([^\s]+)\s+import',  # Relative imports
+        r'from\s+\.+([^\s]+)\s+import',    # Relative imports with dots
+    ]
+    
+    for pattern in import_patterns:
+        matches = re.findall(pattern, content, re.MULTILINE)
+        for match in matches:
+            # Convert Python module path to file path
+            potential_paths = [
+                match.replace('.', '/') + '.py',
+                match.replace('.', '/') + '/__init__.py',
+                match + '.py'
+            ]
+            
+            for potential_path in potential_paths:
+                resolved_path = resolve_import_path(potential_path, file_dir, pr_files)
+                if resolved_path:
+                    dependencies.add(resolved_path)
+    
+    return dependencies
+
+def parse_css_dependencies(content: str, file_dir: str, pr_files: Set[str]) -> Set[str]:
+    """Parse CSS @import statements"""
+    dependencies = set()
+    
+    # CSS import patterns
+    import_patterns = [
+        r'@import\s+[\'"`]([^\'"`]+)[\'"`]',
+        r'@import\s+url\s*\(\s*[\'"`]?([^\'"`\)]+)[\'"`]?\s*\)',
+    ]
+    
+    for pattern in import_patterns:
+        matches = re.findall(pattern, content, re.IGNORECASE)
+        for match in matches:
+            resolved_path = resolve_import_path(match, file_dir, pr_files)
+            if resolved_path:
+                dependencies.add(resolved_path)
+    
+    return dependencies
+
+def parse_html_dependencies(content: str, file_dir: str, pr_files: Set[str]) -> Set[str]:
+    """Parse HTML script and link tags"""
+    dependencies = set()
+    
+    # HTML dependency patterns
+    patterns = [
+        r'<script[^>]+src\s*=\s*[\'"`]([^\'"`]+)[\'"`]',
+        r'<link[^>]+href\s*=\s*[\'"`]([^\'"`]+)[\'"`]',
+        r'<img[^>]+src\s*=\s*[\'"`]([^\'"`]+)[\'"`]',
+    ]
+    
+    for pattern in patterns:
+        matches = re.findall(pattern, content, re.IGNORECASE)
+        for match in matches:
+            # Skip external URLs
+            if match.startswith(('http://', 'https://', '//', 'data:')):
+                continue
+            resolved_path = resolve_import_path(match, file_dir, pr_files)
+            if resolved_path:
+                dependencies.add(resolved_path)
+    
+    return dependencies
+
+def parse_generic_dependencies(content: str, file_dir: str, pr_files: Set[str]) -> Set[str]:
+    """Parse generic file references (for unknown file types)"""
+    dependencies = set()
+    
+    # Look for any references to other files in the PR
+    for pr_file in pr_files:
+        # Check if the file is referenced by name (without extension)
+        file_name = os.path.basename(pr_file)
+        file_name_no_ext = os.path.splitext(file_name)[0]
+        
+        # Simple pattern matching for file references
+        if (file_name in content or 
+            file_name_no_ext in content or 
+            pr_file in content):
+            dependencies.add(pr_file)
+    
+    return dependencies
+
+def resolve_import_path(import_path: str, base_dir: str, pr_files: Set[str]) -> Optional[str]:
+    """
+    Resolve an import path to an actual file in the PR.
+    
+    Args:
+        import_path: The import path from the source code
+        base_dir: Directory of the importing file  
+        pr_files: Set of all files in the PR
+    
+    Returns:
+        Resolved file path if found in PR, None otherwise
+    """
+    # Skip external packages (node_modules, absolute URLs, etc.)
+    if (import_path.startswith(('http://', 'https://', '//', 'data:', '@', 'node_modules/')) or
+        not import_path.startswith(('./', '../', '/')) and '/' not in import_path):
+        return None
+    
+    # Normalize the import path
+    if import_path.startswith('./'):
+        # Relative to current directory
+        candidate_path = os.path.normpath(os.path.join(base_dir, import_path[2:]))
+    elif import_path.startswith('../'):
+        # Relative to parent directory
+        candidate_path = os.path.normpath(os.path.join(base_dir, import_path))
+    elif import_path.startswith('/'):
+        # Absolute path from project root
+        candidate_path = import_path[1:]  # Remove leading slash
+    else:
+        # Try both relative and absolute
+        candidate_path = os.path.normpath(os.path.join(base_dir, import_path))
+    
+    # Try different file extensions
+    extensions = ['', '.js', '.jsx', '.ts', '.tsx', '.json', '.css', '.scss', '.py', '.html', '.htm']
+    
+    for ext in extensions:
+        test_path = candidate_path + ext
+        if test_path in pr_files:
+            return test_path
+        
+        # Also try index files
+        index_path = os.path.join(candidate_path, 'index' + ext)
+        if index_path in pr_files:
+            return index_path
+    
+    # Try exact match
+    if candidate_path in pr_files:
+        return candidate_path
+    
+    return None
+
 def fetch_dynamic_context(target_file: str, dynamic_context_cache: Dict[str, str], pr_files: Set[str], processed_files: Optional[Set[str]] = None) -> str:
     """
-    Fetch context using dynamic cache with updated file contents.
-    Uses refined versions of previously processed files.
+    Fetch context using dynamic cache with DEPENDENCY-BASED filtering.
+    Only includes files that the target file actually imports/depends on.
     """
     context = ""
     total_chars = 0
@@ -293,9 +694,30 @@ def fetch_dynamic_context(target_file: str, dynamic_context_cache: Dict[str, str
     if processed_files is None:
         processed_files = set()
     
-    print(f"[Step3] 🔄 Building dynamic context for {target_file}...")
+    print(f"[Step3] 🎯 Building DEPENDENCY-OPTIMIZED context for {target_file}...")
     
-    for file_name in pr_files:
+    # Get the target file content to parse its dependencies
+    target_content = dynamic_context_cache.get(target_file, "")
+    
+    # Parse dependencies from the target file
+    dependencies = parse_file_dependencies(target_file, target_content, pr_files)
+    
+    # Special case: package.json should see DEPENDENCY SUMMARY instead of all files
+    if target_file.endswith('package.json'):
+        print(f"[Step3] 📦 package.json detected - using DEPENDENCY SUMMARY for lightweight analysis")
+        dependency_summary = get_dependency_summary_for_package_json()
+        print(f"[Step3] 📊 DEPENDENCY SUMMARY: {len(dependency_summary)} characters vs {total_chars:,} from all files")
+        print(f"[Step3] 💡 Context optimization: Using dependency summary instead of all file contents")
+        return dependency_summary
+    elif dependencies:
+        relevant_files = dependencies
+        print(f"[Step3] 🔗 Using {len(relevant_files)} dependency-based context files for {target_file}")
+    else:
+        print(f"[Step3] 🚫 No dependencies found for {target_file} - using minimal context")
+        relevant_files = set()  # No context if no dependencies
+    
+    # Build context from relevant files only
+    for file_name in relevant_files:
         if file_name == target_file:
             continue  # Skip the target file itself
             
@@ -332,8 +754,9 @@ def fetch_dynamic_context(target_file: str, dynamic_context_cache: Dict[str, str
             # Determine if this file is refined or original
             is_refined = file_name in processed_files
             status = "🎯 REFINED" if is_refined else "📄 ORIGINAL"
+            dependency_status = "📦 ALL-CONTEXT" if target_file.endswith('package.json') else "🔗 DEPENDENCY"
             
-            section = f"\n// File: {file_name} ({file_size} chars) [{status}]\n{file_content}\n"
+            section = f"\n// File: {file_name} ({file_size} chars) [{status}] [{dependency_status}]\n{file_content}\n"
             
             # Keep reasonable limit to avoid overwhelming the model
             if total_chars + len(section) > MAX_CONTEXT_CHARS:
@@ -345,18 +768,21 @@ def fetch_dynamic_context(target_file: str, dynamic_context_cache: Dict[str, str
             
             if is_refined:
                 refined_files_count += 1
-                print(f"[Step3] ✅ Added {file_name} to context ({file_size} chars) - REFINED VERSION")
+                print(f"[Step3] ✅ Added DEPENDENCY {file_name} to context ({file_size} chars) - REFINED VERSION")
             else:
                 original_files_count += 1
-                print(f"[Step3] 📄 Added {file_name} to context ({file_size} chars) - ORIGINAL VERSION")
+                print(f"[Step3] 📄 Added DEPENDENCY {file_name} to context ({file_size} chars) - ORIGINAL VERSION")
         else:
-            print(f"[Step3] ⚠️ Warning: {file_name} not found in dynamic cache")
+            print(f"[Step3] ⚠️ Warning: dependency {file_name} not found in dynamic cache")
     
-    print(f"[Step3] 📊 Dynamic context summary for {target_file}:")
+    print(f"[Step3] 📊 DEPENDENCY-OPTIMIZED context summary for {target_file}:")
+    print(f"[Step3]   - Context strategy: {'ALL FILES (package.json)' if target_file.endswith('package.json') else 'DEPENDENCIES ONLY'}")
     print(f"[Step3]   - Total chars: {total_chars:,}")
+    print(f"[Step3]   - Dependencies found: {len(dependencies) if not target_file.endswith('package.json') else len(pr_files) - 1}")
     print(f"[Step3]   - Refined files in context: {refined_files_count}")
     print(f"[Step3]   - Original files in context: {original_files_count}")
     print(f"[Step3]   - Total context files: {refined_files_count + original_files_count}")
+    print(f"[Step3]   - Token efficiency: {((len(pr_files) - 1) - (refined_files_count + original_files_count))} files skipped")
     
     return context
 
@@ -716,9 +1142,9 @@ async def process_single_file(session, file_name: str, old_code: str, requiremen
     try:
         print(f"[Step3] Processing file: {file_name}")
         
-        # Fetch context using dynamic cache if available, otherwise fall back to static context
+        # Fetch context using dynamic cache with dependency optimization, otherwise fall back to static context
         if dynamic_context_cache is not None and pr_files is not None:
-            print(f"[Step3] Using dynamic context for {file_name}")
+            print(f"[Step3] Using DEPENDENCY-OPTIMIZED dynamic context for {file_name}")
             context = fetch_dynamic_context(file_name, dynamic_context_cache, pr_files, processed_files)
         else:
             print(f"[Step3] Falling back to static context for {file_name}")
@@ -766,6 +1192,10 @@ async def process_single_file(session, file_name: str, old_code: str, requiremen
         
         print(f"[Step3] Successfully processed {file_name}")
         
+        # Track external dependencies from the processed file
+        external_deps = extract_external_dependencies(file_name, updated_code)
+        update_external_dependency_store(file_name, external_deps)
+        
         return {
             "old_code": old_code,
             "changes": changes,
@@ -793,9 +1223,9 @@ async def process_single_file_with_web_search(file_name: str, old_code: str, req
             # For fallback, the main function should call process_single_file directly
             raise Exception("OpenAI client not available - use regular MCP process_single_file instead")
         
-        # Fetch context using dynamic cache if available
+        # Fetch context using dynamic cache with dependency optimization
         if dynamic_context_cache is not None and pr_files is not None:
-            print(f"[Step3] Using dynamic context for {file_name}")
+            print(f"[Step3] Using DEPENDENCY-OPTIMIZED dynamic context for {file_name}")
             context = fetch_dynamic_context(file_name, dynamic_context_cache, pr_files, processed_files)
         else:
             print(f"[Step3] Falling back to static context for {file_name}")
@@ -839,6 +1269,10 @@ async def process_single_file_with_web_search(file_name: str, old_code: str, req
                 updated_code = old_code
             
             print(f"[Step3] ✅ Successfully processed {file_name} with web search")
+            
+            # Track external dependencies from the processed file
+            external_deps = extract_external_dependencies(file_name, updated_code)
+            update_external_dependency_store(file_name, external_deps)
             
             return {
                 "old_code": old_code,
@@ -1009,7 +1443,7 @@ async def regenerate_code_with_mcp(files: Dict[str, str], requirements: str, pr,
     total_completion_tokens = 0
     total_tokens = 0
 
-    # Initialize dynamic context cache
+    # Initialize dynamic context cache and external dependency store
     if pr_info:
         repo_name = pr_info["repo_name"]
         pr_number = pr_info["pr_number"]
@@ -1021,6 +1455,11 @@ async def regenerate_code_with_mcp(files: Dict[str, str], requirements: str, pr,
         # Initialize cache with current file contents
         for file_name, file_content in files.items():
             dynamic_context_cache[file_name] = file_content
+    
+    # Initialize external dependency store for package.json optimization
+    global EXTERNAL_DEPENDENCY_STORE
+    EXTERNAL_DEPENDENCY_STORE = {}
+    print(f"[Step3] 📦 External dependency store initialized for package.json optimization")
 
     # Track which files have been processed for context building
     processed_files = set()
@@ -1040,10 +1479,10 @@ async def regenerate_code_with_mcp(files: Dict[str, str], requirements: str, pr,
     # Create ordered processing list: regular files first, then package.json files
     ordered_files = list(regular_files.items()) + list(package_json_files.items())
     
-    print(f"[Step3] 📦 Processing order optimized for dependencies:")
-    print(f"[Step3]   - Regular files first: {len(regular_files)} files")
-    print(f"[Step3]   - Package.json files last: {len(package_json_files)} files")
-    print(f"[Step3]   - This ensures package.json sees all refined dependencies")
+    print(f"[Step3] 📦 Processing order optimized for dependencies and context:")
+    print(f"[Step3]   - Regular files first: {len(regular_files)} files (dependency-based context)")
+    print(f"[Step3]   - Package.json files last: {len(package_json_files)} files (full context)")
+    print(f"[Step3]   - This ensures package.json sees all refined dependencies for comprehensive analysis")
 
     try:
         async with stdio_client(server_params) as (read_stream, write_stream):
@@ -1057,9 +1496,10 @@ async def regenerate_code_with_mcp(files: Dict[str, str], requirements: str, pr,
                     # Special indicator for package.json files
                     if file_name.endswith('package.json'):
                         print(f"[Step3] 📦 Processing PACKAGE.JSON {current_file_number}/{total_files}: {file_name}")
-                        print(f"[Step3] 🔍 DEPENDENCY ANALYSIS MODE: AI will analyze all refined files for exact dependencies")
+                        print(f"[Step3] 🔍 FULL CONTEXT MODE: AI will analyze all refined files for comprehensive dependency analysis")
                     else:
-                        print(f"[Step3] 🔄 Processing file {current_file_number}/{total_files}: {file_name}")
+                        print(f"[Step3] 🎯 Processing file {current_file_number}/{total_files}: {file_name}")
+                        print(f"[Step3] 🔗 DEPENDENCY-BASED CONTEXT: Only including relevant imported files")
                     
                     print(f"[Step3] 📊 Context status: {len(processed_files)} files already refined, {total_files - current_file_number} files remaining")
                     
@@ -1107,15 +1547,18 @@ async def regenerate_code_with_mcp(files: Dict[str, str], requirements: str, pr,
                         print(f"[Step3] 📄 No changes for {file_name} - keeping original in cache")
                         processed_files.add(file_name)  # Still mark as processed even if no changes
 
-        # Print final summary with web search and dynamic context benefits
-        print(f"[Step3] 🎉 AI processing completed with WEB SEARCH, dynamic context and dependency optimization!")
+        # Print final summary with web search, dynamic context and dependency optimization benefits
+        print(f"[Step3] 🎉 AI processing completed with WEB SEARCH, DEPENDENCY-OPTIMIZED context and intelligent processing!")
         print(f"[Step3] 📊 Processing Summary:")
         print(f"[Step3]   - Total files processed: {len(regenerated)}")
         print(f"[Step3]   - Regular files refined: {len(regular_files)}")
         print(f"[Step3]   - Package.json files analyzed: {len(package_json_files)}")
         print(f"[Step3]   - Web search enabled: {'✅ YES' if OPENAI_CLIENT else '❌ NO (OpenAI client not available)'}")
+        print(f"[Step3]   - Context optimization: ✅ DEPENDENCY-BASED (only relevant imports)")
         print(f"[Step3]   - Dynamic context benefit: Later files used refined versions of earlier files")
-        print(f"[Step3]   - Dependency optimization: Package.json files processed last with full context")
+        print(f"[Step3]   - Package.json strategy: ✅ DEPENDENCY SUMMARY (lightweight context instead of all files)")
+        print(f"[Step3]   - External dependencies tracked: {len(EXTERNAL_DEPENDENCY_STORE)} files contributed to dependency analysis")
+        print(f"[Step3]   - Processing order: Regular files first, package.json last with dependency summary")
         print(f"[Step3]   - Latest practices: {'✅ Using real-time web search' if OPENAI_CLIENT else '⚠️ Using static knowledge only'}")
         
         # Print final token usage and pricing
