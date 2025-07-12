@@ -889,88 +889,84 @@ def compose_prompt(requirements: str, code: str, file_name: str, context: str) -
     is_package_json = file_name.endswith('package.json')
     
     base_prompt = (
-        f"You are an expert AI code reviewer. Your job is to improve and refactor ONLY the given file `{file_name}` "
-        f"so that it meets the following coding standards:\n\n"
-        f"{requirements}\n\n"
+        f"You are an expert AI code reviewer. Your job is to make ONLY ESSENTIAL corrections to the given file `{file_name}` "
+        f"to ensure it meets the basic requirements and is free of errors. DO NOT over-engineer or modernize unnecessarily.\n\n"
+        f"🚨 **CONSERVATIVE APPROACH REQUIRED:**\n"
+        f"- Only make changes that are NECESSARY to fix actual problems\n"
+        f"- Do NOT refactor working code unless it has clear issues\n"
+        f"- Do NOT add new features or capabilities\n"
+        f"- Do NOT modernize code that is already working\n"
+        f"- Focus on: syntax errors, missing imports, type issues, obvious bugs\n"
+        f"- Avoid: performance optimizations, pattern changes, style improvements\n\n"
+        f"REQUIREMENTS FROM PROJECT:\n{requirements}\n\n"
         f"---\n Repository Context (other files for reference):\n{context}\n"
         f"---\n Current Code ({file_name} - {file_extension} file):\n```{file_extension}\n{code}\n```\n"
     )
     
     if is_package_json:
         dependency_instructions = (
-            f"\n---\n🔍 SPECIAL PACKAGE.JSON DEPENDENCY ANALYSIS:\n"
-            f"This is a package.json file. You MUST perform strict dependency analysis:\n\n"
-            f"1. CAREFULLY ANALYZE the context files above to identify ALL imports and dependencies actually used\n"
-            f"2. SCAN for: import statements, require(), @types/ packages, testing libraries, build tools\n"
-            f"3. REMOVE any unused dependencies that are not imported in the context files\n"
-            f"4. ADD any missing dependencies that are imported but not listed\n"
-            f"5. UPDATE dependency versions to latest stable versions (check compatibility)\n"
-            f"6. ORGANIZE dependencies into correct sections (dependencies vs devDependencies)\n"
-            f"7. ENSURE TypeScript types are in devDependencies (@types/*, typescript, etc.)\n"
-            f"8. ENSURE testing frameworks are in devDependencies (jest, @testing-library/*, etc.)\n"
-            f"9. ENSURE build tools are in devDependencies (webpack, babel, eslint, etc.)\n"
-            f"10. VERIFY peer dependencies are properly handled\n\n"
-            f"🚨 CRITICAL: Only include dependencies that are ACTUALLY USED in the context files above.\n"
-            f"Do NOT add speculative or 'might need' dependencies. Be STRICT and PRECISE.\n\n"
-            f"📦 DEPENDENCY PHILOSOPHY: More dependencies = More problems\n"
-            f"- Be CONSERVATIVE with adding new dependencies\n"
-            f"- Only add dependencies when absolutely necessary\n"
-            f"- Prefer built-in solutions over external packages when possible\n"
-            f"- Use well-maintained, popular packages over niche alternatives\n"
-            f"- Avoid adding dependencies for features that might be used later\n"
+            f"\n---\n🔍 CONSERVATIVE PACKAGE.JSON ANALYSIS:\n"
+            f"This is a package.json file. Make ONLY essential dependency corrections:\n\n"
+            f"1. **ONLY FIX CRITICAL ISSUES:**\n"
+            f"   - Remove dependencies that are clearly unused (not imported anywhere)\n"
+            f"   - Add dependencies that are imported but missing\n"
+            f"   - Fix obvious version conflicts or syntax errors\n"
+            f"   - Ensure dependencies are in the correct section (dependencies vs devDependencies)\n\n"
+            f"2. **DO NOT MAKE THESE CHANGES:**\n"
+            f"   - Do NOT update versions unless there are compatibility issues\n"
+            f"   - Do NOT add new dependencies for 'improvements'\n"
+            f"   - Do NOT remove dependencies unless you're 100% sure they're unused\n"
+            f"   - Do NOT reorganize or reformat unless there are errors\n\n"
+            f"3. **ONLY ANALYZE THE CONTEXT FILES** to see what's actually imported\n"
+            f"4. **BE EXTREMELY CONSERVATIVE** - when in doubt, leave it unchanged\n\n"
+            f"🚨 CRITICAL: Only make changes that fix actual problems, not 'improvements'\n"
         )
     else:
         dependency_instructions = (
-            f"\n---\n📦 DEPENDENCY & BUILD ERROR PREVENTION:\n"
+            f"\n---\n📦 CONSERVATIVE DEPENDENCY HANDLING:\n"
             f"For import statements and dependencies:\n"
-            f"1. ONLY use dependencies that exist in package.json or are built-in\n"
-            f"2. Do NOT add new import statements for packages not already available\n"
-            f"3. If you need a new dependency, mention it in the ### Changes section\n"
-            f"4. Prefer using existing dependencies from the context over adding new ones\n\n"
-            f"🚫 PREVENT COMMON BUILD ERRORS:\n"
-            f"1. **Unused Imports**: Remove ALL unused imports (like unused React hooks)\n"
-            f"   - If you import useEffect but don't use it, REMOVE the import\n"
-            f"   - Clean up any imported functions, components, or types that aren't used\n"
-            f"2. **Missing Dependencies**: Ensure all imported modules are available\n"
-            f"   - Check that every import statement has a corresponding dependency\n"
-            f"   - For React Router, ensure 'react-router-dom' is in dependencies\n"
-            f"   - For UI libraries, ensure they're properly listed\n"
-            f"3. **TypeScript Issues**: Fix TypeScript configuration problems\n"
-            f"   - Ensure @types/* packages are available for all external libraries\n"
-            f"   - Remove or fix invalid type references\n"
-            f"   - Use proper TypeScript syntax and type annotations\n"
-            f"4. **File Path Issues**: Use correct relative/absolute paths\n"
-            f"   - Verify all import paths are correct and files exist\n"
-            f"   - Use proper case sensitivity for file names\n\n"
-            f"📦 DEPENDENCY PHILOSOPHY: More dependencies = More problems\n"
-            f"- Be EXTREMELY CONSERVATIVE with suggesting new dependencies\n"
-            f"- Only suggest adding dependencies when absolutely necessary\n"
-            f"- Try to solve problems with existing dependencies first\n"
-            f"- If you must add a dependency, explain why it's essential\n"
+            f"1. **ONLY FIX ACTUAL ERRORS:**\n"
+            f"   - Fix syntax errors in imports\n"
+            f"   - Remove unused imports that cause warnings\n"
+            f"   - Add missing imports for undefined variables\n"
+            f"   - Fix incorrect import paths\n\n"
+            f"2. **DO NOT MAKE THESE CHANGES:**\n"
+            f"   - Do NOT change import styles unless there are errors\n"
+            f"   - Do NOT add new imports for 'improvements'\n"
+            f"   - Do NOT restructure imports unless necessary\n"
+            f"   - Do NOT update to 'modern' import patterns\n\n"
+            f"🚫 PREVENT BUILD ERRORS (ESSENTIAL FIXES ONLY):\n"
+            f"1. **Remove unused imports** that will cause build warnings\n"
+            f"2. **Add missing imports** for undefined variables/functions\n"
+            f"3. **Fix TypeScript errors** (missing types, incorrect syntax)\n"
+            f"4. **Correct file paths** if they're wrong\n\n"
+            f"📦 DEPENDENCY PHILOSOPHY: If it's not broken, don't fix it\n"
+            f"- Be EXTREMELY CONSERVATIVE with any changes\n"
+            f"- Only fix actual errors, not 'improvements'\n"
+            f"- Do NOT suggest adding dependencies unless absolutely necessary\n"
         )
     
     format_instructions = (
         f"\n---\nPlease return the updated code and changes in the following EXACT format:\n"
-        f"### Changes:\n- A bullet-point summary of what was changed.\n\n"
+        f"### Changes:\n- A bullet-point summary of what was changed (ONLY essential fixes).\n\n"
         f"### Updated Code:\n```{file_extension}\n<ONLY THE NEW/IMPROVED CODE HERE>\n```\n\n"
         f"⚠️ CRITICAL REQUIREMENTS:\n"
-        f"1. Do NOT use <think> tags or any other XML-like tags\n"
-        f"2. Do NOT include any reasoning or explanation outside the ### Changes section\n"
-        f"3. Provide bullet-point summary of changes under the `### Changes` heading\n"
-        f"4. Provide ONLY ONE code block under the `### Updated Code` heading.\n"
-        f"5. Do NOT show the old code again in your response\n"
-        f"6. Do NOT suggest creating new files. Only update this file\n"
-        f"7. Avoid placeholder imports or components\n"
-        f"8. The response must start with `### Changes:` and end with the code block\n"
-        f"9. Return ONLY the improved/refactored code, not the original code\n"
-        f"10. IMPORTANT: The ### Changes section must end BEFORE the ### Updated Code section\n"
-        f"11. Do NOT put any code blocks directly after ### Changes without ### Updated Code heading\n"
-        f"12. CRITICAL: Return the SAME TYPE of code as the original file ({file_extension})\n"
-        f"13. Do NOT convert file types (e.g., don't convert .js to .css or vice versa)\n"
-        f"14. Maintain the original file structure and language\n"
-        f"15. If the code already meets all requirements and no improvements are needed:\n"
-        f"    - In the ### Changes section, write: 'No changes needed.'\n"
+        f"1. **CONSERVATIVE APPROACH**: Only make changes that fix actual problems\n"
+        f"2. **NO OVER-ENGINEERING**: Do not refactor working code\n"
+        f"3. **ESSENTIAL FIXES ONLY**: syntax errors, missing imports, type issues, obvious bugs\n"
+        f"4. Do NOT use <think> tags or any other XML-like tags\n"
+        f"5. Provide bullet-point summary of changes under the `### Changes` heading\n"
+        f"6. Provide ONLY ONE code block under the `### Updated Code` heading.\n"
+        f"7. Do NOT show the old code again in your response\n"
+        f"8. Do NOT suggest creating new files. Only update this file\n"
+        f"9. The response must start with `### Changes:` and end with the code block\n"
+        f"10. Return ONLY the corrected code, not refactored code\n"
+        f"11. CRITICAL: Return the SAME TYPE of code as the original file ({file_extension})\n"
+        f"12. Do NOT convert file types or change file structure\n"
+        f"13. **IF NO ESSENTIAL FIXES ARE NEEDED:**\n"
+        f"    - In the ### Changes section, write: 'No essential changes needed.'\n"
         f"    - In the ### Updated Code section, return the original code unchanged.\n"
+        f"14. **CHANGES MUST BE ESSENTIAL**: Only report actual fixes, not improvements\n"
     )
     
     return base_prompt + dependency_instructions + format_instructions
@@ -1302,7 +1298,7 @@ async def process_single_file_with_web_search(file_name: str, old_code: str, req
         }
 
 def compose_web_search_prompt(requirements: str, code: str, file_name: str, context: str) -> str:
-    """Create a web search enhanced prompt for code generation with latest practices"""
+    """Create a web search enhanced prompt for conservative code correction with error prevention"""
     # Get the file extension for the AI to understand the language
     file_extension = file_name.split('.')[-1].lower()
     
@@ -1310,125 +1306,133 @@ def compose_web_search_prompt(requirements: str, code: str, file_name: str, cont
     is_package_json = file_name.endswith('package.json')
     
     base_prompt = (
-        f"You are an expert AI code reviewer with access to real-time web search. Your job is to improve and refactor ONLY the given file `{file_name}` "
-        f"using the latest coding standards, best practices, and current technology trends.\n\n"
+        f"You are an expert AI code reviewer with access to real-time web search. Your job is to make ONLY ESSENTIAL corrections to the given file `{file_name}` "
+        f"to ensure it is free of errors and meets basic requirements. DO NOT over-engineer or modernize unnecessarily.\n\n"
+        f"🚨 **CONSERVATIVE APPROACH REQUIRED:**\n"
+        f"- Only make changes that are NECESSARY to fix actual problems\n"
+        f"- Do NOT refactor working code unless it has clear issues\n"
+        f"- Do NOT add new features or capabilities\n"
+        f"- Do NOT modernize code that is already working\n"
+        f"- Focus on: syntax errors, missing imports, type issues, obvious bugs\n"
+        f"- Avoid: performance optimizations, pattern changes, style improvements\n\n"
         f"REQUIREMENTS FROM PROJECT:\n{requirements}\n\n"
         f"---\nRepository Context (other files for reference):\n{context}\n"
         f"---\nCurrent Code ({file_name} - {file_extension} file):\n```{file_extension}\n{code}\n```\n"
     )
     
     web_search_instructions = (
-        f"\n---\n🌐 **WEB SEARCH ENHANCEMENT INSTRUCTIONS:**\n"
-        f"You have access to real-time web search. Use it to ensure your code follows the LATEST practices:\n\n"
-        f"1. **SEARCH for current best practices** for the specific technology/framework used in this file\n"
-        f"2. **VERIFY latest syntax** and API changes for the libraries/frameworks involved\n"
-        f"3. **CHECK for security vulnerabilities** and modern security practices\n"
-        f"4. **FIND performance optimization** techniques for the specific technology\n"
-        f"5. **DISCOVER breaking changes** in recent versions of dependencies\n"
-        f"6. **LOOK UP accessibility (a11y)** standards and modern requirements\n"
-        f"7. **RESEARCH testing patterns** and modern testing approaches\n"
-        f"8. **VERIFY TypeScript best practices** if applicable\n"
-        f"9. **CHECK modern React patterns** if it's a React component\n"
-        f"10. **FIND current ESLint/Prettier** configuration standards\n\n"
-        f"🔍 **SEARCH STRATEGY:**\n"
-        f"- Search for '{file_extension} best practices 2024'\n"
-        f"- Search for specific library/framework + 'latest version changes'\n"
-        f"- Search for 'modern {file_extension} patterns'\n"
-        f"- Search for security and performance optimizations\n"
-        f"- Verify any imports/dependencies are using latest stable versions\n\n"
-        f"🎯 **ALWAYS PRIORITIZE:**\n"
-        f"- **CURRENT/LATEST** information over outdated practices\n"
-        f"- **SECURITY** - implement latest security best practices\n"
-        f"- **PERFORMANCE** - use modern optimization techniques\n"
-        f"- **ACCESSIBILITY** - follow current a11y standards\n"
-        f"- **MAINTAINABILITY** - use patterns that are currently recommended\n"
-        f"- **TYPE SAFETY** - implement strong typing where applicable\n"
+        f"\n---\n🌐 **WEB SEARCH FOR ERROR PREVENTION:**\n"
+        f"Use web search to identify and prevent common errors, but be CONSERVATIVE:\n\n"
+        f"1. **SEARCH for common build errors** with the specific technology/framework\n"
+        f"2. **VERIFY syntax issues** and compatibility problems\n"
+        f"3. **CHECK for deprecated APIs** that might cause errors\n"
+        f"4. **FIND breaking changes** in dependencies that affect this code\n"
+        f"5. **LOOK UP security vulnerabilities** that need immediate fixes\n"
+        f"6. **RESEARCH import/export issues** for the specific library versions\n\n"
+        f"🔍 **CONSERVATIVE SEARCH STRATEGY:**\n"
+        f"- Search for '{file_extension} common errors' or 'build errors'\n"
+        f"- Search for specific error messages if code has issues\n"
+        f"- Search for 'deprecated' + library name\n"
+        f"- Search for 'security vulnerabilities' + library name\n"
+        f"- Verify import syntax for current versions\n\n"
+        f"🎯 **ONLY PRIORITIZE ESSENTIAL FIXES:**\n"
+        f"- **SYNTAX ERRORS** - fix code that won't compile/run\n"
+        f"- **MISSING IMPORTS** - add imports for undefined variables\n"
+        f"- **DEPRECATED APIS** - replace only if causing errors\n"
+        f"- **SECURITY ISSUES** - fix only critical vulnerabilities\n"
+        f"- **BUILD ERRORS** - resolve compilation failures\n"
+        f"- **TYPE ERRORS** - fix TypeScript compilation issues\n\n"
+        f"❌ **DO NOT SEARCH FOR OR IMPLEMENT:**\n"
+        f"- Best practices or modern patterns\n"
+        f"- Performance optimizations\n"
+        f"- Style improvements\n"
+        f"- Feature enhancements\n"
+        f"- Code modernization\n"
     )
     
     if is_package_json:
         dependency_instructions = (
-            f"\n---\n🔍 **PACKAGE.JSON WEB SEARCH ANALYSIS:**\n"
-            f"This is a package.json file. Use web search to perform COMPREHENSIVE dependency analysis:\n\n"
-            f"1. **SEARCH for each dependency** to verify:\n"
-            f"   - Current stable version (not just latest - check for stability)\n"
-            f"   - Breaking changes in recent versions\n"
-            f"   - Security vulnerabilities\n"
-            f"   - Deprecated packages (search for alternatives)\n"
-            f"   - Peer dependency requirements\n\n"
-            f"2. **VERIFY compatibility** between packages:\n"
-            f"   - Search for known conflicts between major dependencies\n"
-            f"   - Check React/Vue/Angular version compatibility\n"
-            f"   - Verify TypeScript version compatibility\n\n"
-            f"3. **DISCOVER modern alternatives** to outdated packages:\n"
-            f"   - Search for 'alternatives to [package-name] 2024'\n"
-            f"   - Look for more maintained/performant options\n"
-            f"   - Check GitHub stars, maintenance activity\n\n"
-            f"4. **ANALYZE the context files** to see what's actually imported and used\n"
-            f"5. **REMOVE unused dependencies** that aren't imported anywhere\n"
-            f"6. **ADD missing dependencies** that are imported but not listed\n"
-            f"7. **UPDATE versions** to current stable releases\n"
-            f"8. **ORGANIZE properly** (dependencies vs devDependencies)\n\n"
-            f"🚨 **CRITICAL WEB SEARCH QUERIES:**\n"
-            f"- '[package-name] latest stable version 2024'\n"
-            f"- '[package-name] security vulnerabilities'\n"
-            f"- '[package-name] breaking changes'\n"
-            f"- 'alternatives to [package-name] 2024'\n"
-            f"- 'React/TypeScript/Node.js version compatibility 2024'\n\n"
-            f"💡 **PHILOSOPHY**: Use web search to make INFORMED decisions about dependencies\n"
-            f"- Only include packages that are ACTIVELY MAINTAINED\n"
-            f"- Prefer packages with strong community support\n"
-            f"- Choose stable versions over bleeding edge\n"
-            f"- Security is paramount - search for any CVEs\n"
+            f"\n---\n🔍 **CONSERVATIVE PACKAGE.JSON WEB SEARCH:**\n"
+            f"This is a package.json file. Use web search to identify CRITICAL issues only:\n\n"
+            f"1. **SEARCH for CRITICAL ISSUES only:**\n"
+            f"   - Security vulnerabilities that need immediate fixes\n"
+            f"   - Breaking changes causing build failures\n"
+            f"   - Deprecated packages that are causing errors\n"
+            f"   - Version conflicts preventing installation\n\n"
+            f"2. **VERIFY what's actually imported** in the context files\n"
+            f"   - Only remove dependencies that are clearly unused\n"
+            f"   - Only add dependencies that are imported but missing\n"
+            f"   - Be conservative about version changes\n\n"
+            f"3. **CONSERVATIVE SEARCH QUERIES:**\n"
+            f"   - '[package-name] security vulnerabilities'\n"
+            f"   - '[package-name] deprecated breaking changes'\n"
+            f"   - '[package-name] build errors'\n"
+            f"   - 'npm install errors [package-name]'\n\n"
+            f"❌ **DO NOT SEARCH FOR OR IMPLEMENT:**\n"
+            f"   - Latest versions unless causing errors\n"
+            f"   - Modern alternatives unless current package is broken\n"
+            f"   - Performance optimizations\n"
+            f"   - Speculative improvements\n"
+            f"   - Package reorganization unless necessary\n\n"
+            f"💡 **PHILOSOPHY**: If package.json works, don't fix it\n"
+            f"- Only fix actual errors, not improvements\n"
+            f"- Be extremely conservative with version changes\n"
+            f"- Only add/remove dependencies for clear issues\n"
+            f"- When in doubt, leave it unchanged\n"
         )
     else:
         dependency_instructions = (
-            f"\n---\n📦 **DEPENDENCY & IMPORT WEB SEARCH VERIFICATION:**\n"
+            f"\n---\n📦 **CONSERVATIVE DEPENDENCY WEB SEARCH:**\n"
             f"For import statements and dependencies:\n"
-            f"1. **SEARCH for current import syntax** for each library/framework used\n"
-            f"2. **VERIFY API changes** in recent versions of imported packages\n"
-            f"3. **CHECK for deprecated imports** and find modern replacements\n"
-            f"4. **DISCOVER new features** in current versions that could improve the code\n"
-            f"5. **FIND breaking changes** that might affect imports\n\n"
-            f"🚫 **BUILD ERROR PREVENTION WITH WEB SEARCH:**\n"
-            f"1. **Search for common build errors** with the specific framework/library\n"
-            f"2. **Verify TypeScript configuration** best practices for 2024\n"
-            f"3. **Check for import/export issues** in current versions\n"
-            f"4. **Search for linting rule updates** and modern ESLint configs\n"
-            f"5. **Find accessibility patterns** for UI components\n\n"
-            f"💡 **MODERN CODE PATTERNS:**\n"
-            f"- Search for 'modern {file_extension} patterns 2024'\n"
-            f"- Look up current React hooks best practices\n"
-            f"- Find latest TypeScript utility types\n"
-            f"- Check for new CSS-in-JS solutions\n"
-            f"- Verify current testing patterns\n"
+            f"1. **SEARCH for ERROR-CAUSING ISSUES only:**\n"
+            f"   - Syntax errors in imports\n"
+            f"   - Deprecated imports causing build failures\n"
+            f"   - Missing imports for undefined variables\n"
+            f"   - Incorrect import paths\n\n"
+            f"2. **VERIFY ONLY WHEN THERE ARE ERRORS:**\n"
+            f"   - Check if imports are causing build failures\n"
+            f"   - Look up breaking changes only if code is broken\n"
+            f"   - Search for compatibility issues only if needed\n\n"
+            f"🚫 **BUILD ERROR PREVENTION (ESSENTIAL ONLY):**\n"
+            f"1. **Search for specific error messages** if code has issues\n"
+            f"2. **Check for deprecated APIs** only if they're causing errors\n"
+            f"3. **Find import/export problems** only if build is failing\n"
+            f"4. **Look up TypeScript errors** only if compilation fails\n\n"
+            f"❌ **DO NOT SEARCH FOR:**\n"
+            f"- Modern patterns or improvements\n"
+            f"- Performance optimizations\n"
+            f"- Style or structure improvements\n"
+            f"- Latest features or capabilities\n"
+            f"- Best practices unless fixing errors\n"
         )
     
     format_instructions = (
         f"\n---\nPlease return the updated code and changes in the following EXACT format:\n"
-        f"### Changes:\n- A clean bullet-point summary of what was changed based on web search findings.\n\n"
-        f"### Updated Code:\n```{file_extension}\n<ONLY THE NEW/IMPROVED CODE HERE>\n```\n\n"
+        f"### Changes:\n- A clean bullet-point summary of ESSENTIAL fixes only.\n\n"
+        f"### Updated Code:\n```{file_extension}\n<ONLY THE CORRECTED CODE HERE>\n```\n\n"
         f"⚠️ **CRITICAL REQUIREMENTS:**\n"
-        f"1. **USE WEB SEARCH** to verify all suggestions and find latest practices\n"
-        f"2. **MENTION WEB SEARCH FINDINGS** in the changes section but keep it clean\n"
-        f"3. **DO NOT include URLs, links, or citations** in the changes section\n"
-        f"4. **Keep changes section professional** - no parenthetical references or links\n"
-        f"5. Do NOT use <think> tags or any other XML-like tags\n"
-        f"6. Provide bullet-point summary of changes under the `### Changes` heading\n"
-        f"7. Provide ONLY ONE code block under the `### Updated Code` heading\n"
-        f"8. Do NOT show the old code again in your response\n"
-        f"9. Do NOT suggest creating new files. Only update this file\n"
-        f"10. The response must start with `### Changes:` and end with the code block\n"
-        f"11. Return ONLY the improved/refactored code using LATEST practices\n"
-        f"12. Return the SAME TYPE of code as the original file ({file_extension})\n"
-        f"13. If the code already meets current best practices:\n"
-        f"    - In the ### Changes section, write: 'No changes needed - code follows current best practices.'\n"
+        f"1. **CONSERVATIVE APPROACH**: Only make changes that fix actual problems\n"
+        f"2. **NO OVER-ENGINEERING**: Do not refactor working code\n"
+        f"3. **ESSENTIAL FIXES ONLY**: syntax errors, missing imports, type issues, obvious bugs\n"
+        f"4. **USE WEB SEARCH** only to verify error fixes, not for improvements\n"
+        f"5. **DO NOT include URLs, links, or citations** in the changes section\n"
+        f"6. Do NOT use <think> tags or any other XML-like tags\n"
+        f"7. Provide bullet-point summary of changes under the `### Changes` heading\n"
+        f"8. Provide ONLY ONE code block under the `### Updated Code` heading\n"
+        f"9. Do NOT show the old code again in your response\n"
+        f"10. Do NOT suggest creating new files. Only update this file\n"
+        f"11. The response must start with `### Changes:` and end with the code block\n"
+        f"12. Return ONLY the corrected code, not refactored code\n"
+        f"13. Return the SAME TYPE of code as the original file ({file_extension})\n"
+        f"14. **IF NO ESSENTIAL FIXES ARE NEEDED:**\n"
+        f"    - In the ### Changes section, write: 'No essential changes needed.'\n"
         f"    - In the ### Updated Code section, return the original code unchanged.\n"
-        f"14. **VERIFY with web search** before making any claims about best practices\n"
         f"15. **CHANGES FORMAT**: Use simple, clean bullet points like:\n"
-        f"    - Enhanced accessibility with proper ARIA labels\n"
-        f"    - Updated to latest React patterns and hooks\n"
-        f"    - Improved error handling and validation\n"
-        f"    - Added TypeScript strict typing\n"
+        f"    - Fixed syntax error in import statement\n"
+        f"    - Added missing import for undefined variable\n"
+        f"    - Corrected TypeScript type annotation\n"
+        f"    - Removed unused import causing build warning\n"
+        f"16. **CHANGES MUST BE ESSENTIAL**: Only report actual fixes, not improvements\n"
     )
     
     return base_prompt + web_search_instructions + dependency_instructions + format_instructions
@@ -2343,7 +2347,7 @@ def run_npm_install_with_error_correction(package_dir_path, package_file, repo_p
     Returns True if successful, False otherwise.
     """
     package_dir = os.path.dirname(package_file) if os.path.dirname(package_file) else "."
-    MAX_CORRECTION_ATTEMPTS = 5  # Maximum number of LLM correction attempts
+    MAX_CORRECTION_ATTEMPTS = 10  # Maximum number of LLM correction attempts
     
     def attempt_npm_install():
         """Helper function to attempt npm install"""
@@ -2540,7 +2544,7 @@ def run_npm_build_with_error_correction(repo_path, package_json_files, regenerat
     print(f"[LocalRepo] 🏗️ Starting npm build validation with intelligent error correction...")
     
     build_results = []
-    MAX_BUILD_CORRECTION_ATTEMPTS = 8  # Maximum number of LLM correction attempts per package
+    MAX_BUILD_CORRECTION_ATTEMPTS = 15  # Maximum number of LLM correction attempts per package
     
     def attempt_npm_build(package_dir_path):
         """Helper function to attempt npm build"""
@@ -2562,6 +2566,179 @@ def run_npm_build_with_error_correction(repo_path, package_json_files, regenerat
         except Exception as e:
             print(f"[LocalRepo] ❌ Error during npm run build: {e}")
             return None
+
+    async def extract_affected_files_from_error_with_llm(build_error, package_dir_path, pr_info):
+        """
+        Use LLM to intelligently extract affected files from build errors.
+        
+        This replaces regex-based file detection which couldn't handle:
+        - Vite timestamp files (vite.config.ts.timestamp-xxxxx.mjs)
+        - Complex webpack transformations
+        - Unusual build tool error formats
+        
+        The LLM can understand the semantic meaning of errors and identify
+        the actual source files that need to be fixed.
+        """
+        print(f"[LocalRepo] 🧠 Using INTELLIGENT LLM file identification (handles Vite timestamps, webpack transforms, etc.)")
+        
+        # Get list of all files in the package directory for reference
+        all_files = []
+        try:
+            for root, dirs, files in os.walk(package_dir_path):
+                for file in files:
+                    if file.endswith(('.ts', '.tsx', '.js', '.jsx', '.vue', '.json', '.css', '.scss', '.html')):
+                        rel_path = os.path.relpath(os.path.join(root, file), package_dir_path)
+                        all_files.append(rel_path)
+        except Exception as e:
+            print(f"[LocalRepo] ⚠️ Error scanning directory: {e}")
+        
+        file_identification_prompt = f"""You are analyzing a build error to identify which specific files need to be fixed. 
+
+BUILD ERROR:
+{build_error}
+
+Available files in the project:
+{chr(10).join(all_files[:50])}  {"... (truncated)" if len(all_files) > 50 else ""}
+
+TASK: Identify the specific files that are causing this build error and need to be modified to fix it.
+
+IMPORTANT GUIDELINES:
+1. Look for file paths mentioned in the error (even with timestamps or temporary extensions)
+2. Consider the root cause - if a dependency is missing, the importing file needs the dependency added
+3. If there are TypeScript config errors, identify the config files that need changes
+4. Be specific - return only files that actually exist and need modification
+5. Strip any temporary extensions/timestamps to get the real file names
+
+Return ONLY a JSON array of file paths, relative to the project root:
+["file1.ts", "src/file2.tsx", "tsconfig.json"]
+
+Do not include any explanation, just the JSON array."""
+
+        try:
+            if not OPENAI_CLIENT:
+                print(f"[LocalRepo] ⚠️ OpenAI not available for file identification, using fallback")
+                return extract_affected_files_from_error_fallback(build_error, package_dir_path)
+            
+            # Use OpenAI to identify files
+            response = await asyncio.to_thread(
+                OPENAI_CLIENT.chat.completions.create,
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": file_identification_prompt}],
+                temperature=0.1
+            )
+            
+            response_text = response.choices[0].message.content
+            if response_text:
+                response_text = response_text.strip()
+            else:
+                response_text = ""
+            print(f"[LocalRepo] 🤖 LLM response: {response_text}")
+            
+            # Parse the JSON response - handle both markdown code blocks and raw JSON
+            try:
+                # First try to extract JSON from markdown code blocks
+                json_content = None
+                
+                # Pattern 1: ```json ... ```
+                json_block_match = re.search(r'```json\s*\n?(.*?)```', response_text, re.DOTALL)
+                if json_block_match:
+                    json_content = json_block_match.group(1).strip()
+                    print(f"[LocalRepo] 🔍 Extracted JSON from markdown code block")
+                
+                # Pattern 2: ``` ... ``` (generic code block)
+                elif '```' in response_text:
+                    code_block_match = re.search(r'```\s*\n?(.*?)```', response_text, re.DOTALL)
+                    if code_block_match:
+                        potential_json = code_block_match.group(1).strip()
+                        # Check if it looks like a JSON array
+                        if potential_json.startswith('[') and potential_json.endswith(']'):
+                            json_content = potential_json
+                            print(f"[LocalRepo] 🔍 Extracted JSON from generic code block")
+                
+                # Pattern 3: Raw JSON (fallback)
+                if not json_content:
+                    json_content = response_text.strip()
+                    print(f"[LocalRepo] 🔍 Using raw response as JSON")
+                
+                # Parse the extracted JSON
+                affected_files = json.loads(json_content)
+                
+                if isinstance(affected_files, list):
+                    # Filter to only files that actually exist
+                    existing_files = []
+                    for file_path in affected_files:
+                        full_path = os.path.join(package_dir_path, file_path)
+                        if os.path.exists(full_path):
+                            existing_files.append(file_path)
+                        else:
+                            print(f"[LocalRepo] ⚠️ LLM suggested {file_path} but file doesn't exist")
+                    
+                    print(f"[LocalRepo] ✅ LLM identified {len(existing_files)} affected files: {existing_files}")
+                    return existing_files
+                else:
+                    print(f"[LocalRepo] ❌ LLM response is not a valid array: {type(affected_files)}")
+                    return extract_affected_files_from_error_fallback(build_error, package_dir_path)
+                    
+            except json.JSONDecodeError as e:
+                print(f"[LocalRepo] ❌ Could not parse LLM response as JSON: {e}")
+                print(f"[LocalRepo] 🔍 Raw response: {response_text[:200]}...")
+                return extract_affected_files_from_error_fallback(build_error, package_dir_path)
+                
+        except Exception as e:
+            print(f"[LocalRepo] ❌ Error with LLM file identification: {e}")
+            return extract_affected_files_from_error_fallback(build_error, package_dir_path)
+
+    def extract_affected_files_from_error_fallback(build_error, package_dir_path):
+        """Fallback regex-based file extraction (enhanced patterns)"""
+        print(f"[LocalRepo] 🔄 Using fallback regex-based file identification...")
+        affected_files = set()
+        
+        # Enhanced patterns to catch more error formats
+        file_patterns = [
+            # Standard TypeScript/JavaScript errors
+            r'([a-zA-Z0-9_./\-]+\.(?:ts|tsx|js|jsx|vue|json))\(\d+,\d+\):',  
+            r'in ([a-zA-Z0-9_./\-]+\.(?:ts|tsx|js|jsx|vue|json))',           
+            r'([a-zA-Z0-9_./\-]+\.(?:ts|tsx|js|jsx|vue|json)):\d+:\d+',     
+            r"'([a-zA-Z0-9_./\-]+\.(?:ts|tsx|js|jsx|vue|json))'",
+            
+            # Enhanced patterns for build tool temporary files
+            r'from ([a-zA-Z0-9_./\-]+\.(?:ts|tsx|js|jsx|vue|json))\.timestamp',  # Vite timestamps
+            r'imported from ([a-zA-Z0-9_./\-]+\.(?:ts|tsx|js|jsx|vue|json))',     # Import errors
+            r'Cannot find module.*?([a-zA-Z0-9_./\-]+\.(?:ts|tsx|js|jsx|vue|json))', # Module not found
+            
+            # Config file patterns
+            r'config from ([a-zA-Z0-9_./\-]+\.(?:ts|js|json))',               # Config errors
+            r'([a-zA-Z0-9_./\-]*tsconfig[a-zA-Z0-9_./\-]*\.json)',           # TypeScript configs
+            r'([a-zA-Z0-9_./\-]*vite\.config\.(?:ts|js))',                   # Vite configs
+            r'([a-zA-Z0-9_./\-]*webpack\.config\.(?:ts|js))',                # Webpack configs
+        ]
+        
+        for pattern in file_patterns:
+            matches = re.findall(pattern, build_error, re.IGNORECASE)
+            for match in matches:
+                # Clean up the file path
+                file_path = match.strip()
+                
+                # Convert absolute paths to relative
+                if file_path.startswith('/'):
+                    try:
+                        rel_path = os.path.relpath(file_path, package_dir_path)
+                        if not rel_path.startswith('..'):
+                            affected_files.add(rel_path)
+                    except:
+                        pass
+                else:
+                    # Assume it's already relative
+                    affected_files.add(file_path)
+        
+        # Filter to only files that actually exist
+        existing_files = []
+        for file_path in affected_files:
+            full_path = os.path.join(package_dir_path, file_path)
+            if os.path.exists(full_path):
+                existing_files.append(file_path)
+        
+        return existing_files
 
     def extract_affected_files_from_error(build_error, package_dir_path):
         """Extract file paths mentioned in build errors"""
@@ -2751,7 +2928,11 @@ def run_npm_build_with_error_correction(repo_path, package_json_files, regenerat
                         print(f"[LocalRepo] ❌ Error trying to fix package.json for dependency errors: {e}")
             
             # Extract affected files from the error message (for source code fixes)
-            affected_files = extract_affected_files_from_error(full_build_error, package_dir_path)
+            try:
+                affected_files = asyncio.run(extract_affected_files_from_error_with_llm(full_build_error, package_dir_path, pr_info))
+            except Exception as e:
+                print(f"[LocalRepo] ❌ Error with LLM file identification, using fallback: {e}")
+                affected_files = extract_affected_files_from_error_fallback(full_build_error, package_dir_path)
             
             if not affected_files:
                 print(f"[LocalRepo] ⚠️ Could not identify specific files causing build errors")
@@ -3033,3 +3214,296 @@ def regenerate_files(pr_info):
     print(f"[Step3] 📊 Files processed: {len(regenerated_files)}")
     
     return regenerated_files
+
+def convert_commonjs_to_es_modules(content: str) -> str:
+    """Convert CommonJS syntax to ES modules for .js to .jsx conversion"""
+    try:
+        # Remove strict mode
+        content = content.replace('"use strict";', '')
+        content = content.replace("'use strict';", '')
+        
+        # Convert require statements to import statements
+        content = re.sub(r'var\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*require\(["\']([^"\']+)["\']\);?', 
+                        r'import \1 from "\2";', content)
+        content = re.sub(r'const\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*require\(["\']([^"\']+)["\']\);?', 
+                        r'import \1 from "\2";', content)
+        
+        # Convert destructured requires
+        content = re.sub(r'const\s+\{([^}]+)\}\s*=\s*require\(["\']([^"\']+)["\']\);?', 
+                        r'import { \1 } from "\2";', content)
+        content = re.sub(r'var\s+\{([^}]+)\}\s*=\s*require\(["\']([^"\']+)["\']\);?', 
+                        r'import { \1 } from "\2";', content)
+        
+        # Convert module.exports to export default
+        content = re.sub(r'module\.exports\s*=\s*([a-zA-Z_][a-zA-Z0-9_]*);?', 
+                       r'export default \1;', content)
+        content = re.sub(r'module\.exports\s*=\s*\{([^}]+)\};?', 
+                       r'export default {\1};', content)
+        
+        # Clean up CommonJS artifacts
+        content = re.sub(r'exports\.__esModule\s*=\s*true;?', '', content)
+        content = re.sub(r'Object\.defineProperty\(exports,\s*"__esModule",\s*\{\s*value:\s*true\s*\}\);?', '', content)
+        
+        # Clean up extra whitespace
+        content = re.sub(r'\n\s*\n', '\n\n', content)
+        content = content.strip()
+        
+        return content
+    except Exception as e:
+        print(f"[LocalRepo] ⚠️ Error converting CommonJS to ES modules: {e}")
+        return content  # Return original if conversion fails
+
+async def fix_build_errors_with_web_search_v2(build_error, affected_files, package_dir_path, pr_info):
+    """
+    Enhanced version with comprehensive file type support and rename operations.
+    Use OpenAI with web search to fix all types of build errors.
+    Returns dict of corrected files or None if correction fails.
+    """
+    if not OPENAI_CLIENT:
+        print("[LocalRepo] ⚠️ OpenAI client not available - falling back to regular LLM")
+        return await fix_build_errors_with_llm(build_error, affected_files, package_dir_path, pr_info)
+    
+    if not pr_info:
+        print("[LocalRepo] 🔧 No PR info available for web search build error correction")
+        return None
+    
+    print(f"[LocalRepo] 🌐 Using enhanced web search to fix build errors...")
+    
+    # Analyze the build error to identify problematic files
+    affected_file_contents = {}
+    for file_path in affected_files:
+        full_path = os.path.join(package_dir_path, file_path)
+        if os.path.exists(full_path):
+            try:
+                with open(full_path, "r", encoding="utf-8") as f:
+                    affected_file_contents[file_path] = f.read()
+            except Exception as e:
+                print(f"[LocalRepo] ⚠️ Could not read {file_path}: {e}")
+                continue
+    
+    if not affected_file_contents:
+        print("[LocalRepo] ❌ No affected files could be read for web search build error correction")
+        return None
+    
+    # Create enhanced web search prompt
+    files_context = ""
+    for file_path, content in affected_file_contents.items():
+        files_context += f"\n\n--- {file_path} ---\n```\n{content}\n```"
+    
+    web_search_prompt = f"""I'm getting build errors and need help fixing them. Here are the exact errors:
+
+{build_error}
+
+Current files that need fixing:
+{files_context}
+
+Please search for the latest information and help me fix these specific errors. I need:
+1. Current API and syntax for the packages/libraries involved
+2. Proper TypeScript/JavaScript usage patterns
+3. How to fix import/export errors and missing members
+4. Compatible version information and breaking changes
+5. Modern best practices for the technologies involved
+6. If files need to be renamed (like .js to .jsx), provide the corrected content
+
+Please provide the corrected files with proper imports, exports, and syntax."""
+
+    try:
+        # Use OpenAI Responses API with web search
+        response = await asyncio.to_thread(
+            OPENAI_CLIENT.responses.create,
+            model="gpt-4.1-mini",
+            tools=[{"type": "web_search_preview"}],
+            input=web_search_prompt
+        )
+        
+        # Extract the response text from Responses API
+        if hasattr(response, 'output_text'):
+            response_text = response.output_text
+        else:
+            print("[LocalRepo] ❌ Could not extract response from OpenAI web search")
+            return None
+        
+        print(f"[LocalRepo] 🌐 Web search completed, analyzing response...")
+        
+        # Parse the corrected files from the response
+        corrected_files = {}
+        
+        # Enhanced patterns for extracting ALL file types and operations
+        patterns = [
+            # JavaScript/TypeScript files with explicit language tags
+            r'```(?:javascript|typescript|jsx|tsx|js|ts)\s*(?://\s*)?([^\n]*\.(?:js|jsx|ts|tsx))[^\n]*\n([\s\S]*?)```',
+            r'```(?:javascript|typescript|jsx|tsx|js|ts)\s*\n([\s\S]*?)```',
+            
+            # JSON config files (keep existing functionality)
+            r'```json\s*(?://\s*)?([^\n]*\.json)[^\n]*\n([\s\S]*?)```',
+            r'```json\s*\n([\s\S]*?)```',
+            
+            # File headers with code blocks (markdown style)
+            r'#### ([^\n]*\.(?:js|jsx|ts|tsx|json|css|scss|html|vue))[^\n]*\n```[a-zA-Z0-9]*\n([\s\S]*?)```',
+            r'### ([^\n]*\.(?:js|jsx|ts|tsx|json|css|scss|html|vue))[^\n]*\n```[a-zA-Z0-9]*\n([\s\S]*?)```',
+            r'## ([^\n]*\.(?:js|jsx|ts|tsx|json|css|scss|html|vue))[^\n]*\n```[a-zA-Z0-9]*\n([\s\S]*?)```',
+            
+            # Files mentioned in text followed by code blocks
+            r'(?:update|fix|change|modify|create)\s+([^\s]+\.(?:js|jsx|ts|tsx|json|css|scss|html|vue))[^\n]*\n```[a-zA-Z0-9]*\n([\s\S]*?)```',
+            r'(?:file|component):\s*([^\s]+\.(?:js|jsx|ts|tsx|json|css|scss|html|vue))[^\n]*\n```[a-zA-Z0-9]*\n([\s\S]*?)```',
+            
+            # Direct file paths with code blocks
+            r'([a-zA-Z0-9_./\-]+\.(?:js|jsx|ts|tsx|json|css|scss|html|vue))\s*:?\s*```[a-zA-Z0-9]*\n([\s\S]*?)```',
+            
+            # Config files by specific name
+            r'(tsconfig\.(?:app|node)?\.json)\s*[:\n]+\s*```[a-zA-Z0-9]*\n([\s\S]*?)```',
+            r'(vite\.config\.(?:js|ts))\s*[:\n]+\s*```[a-zA-Z0-9]*\n([\s\S]*?)```',
+            r'(package\.json)\s*[:\n]+\s*```[a-zA-Z0-9]*\n([\s\S]*?)```',
+            
+            # Pattern for any JSON code block near mentions of config files
+            r'(?:tsconfig\.(?:app|node)?\.json|TypeScript configuration)[\s\S]*?```json\n([\s\S]*?)```',
+            
+            # Generic code blocks (for single file scenarios)
+            r'```[a-zA-Z0-9]*\n([\s\S]*?)```'
+        ]
+        
+        # Track which files we've found corrections for
+        found_files = set()
+        
+        # Process patterns to find file corrections
+        for pattern in patterns:
+            matches = re.findall(pattern, response_text, re.IGNORECASE)
+            
+            for match in matches:
+                if len(match) == 2:  # (filename, content) tuple
+                    file_path, file_content = match
+                    file_path = file_path.strip()
+                    file_content = file_content.strip()
+                    
+                    # Clean up file path
+                    if file_path.startswith('./'):
+                        file_path = file_path[2:]
+                    elif file_path.startswith('/'):
+                        file_path = file_path[1:]
+                    
+                    # Check if this file is one we're trying to fix
+                    if file_path in affected_files or file_path in affected_file_contents:
+                        # Validate content based on file type
+                        is_valid = True
+                        if file_path.endswith('.json'):
+                            try:
+                                json.loads(file_content)
+                            except json.JSONDecodeError:
+                                is_valid = False
+                                continue
+                        
+                        if is_valid:
+                            corrected_files[file_path] = file_content
+                            found_files.add(file_path)
+                            print(f"[LocalRepo] ✅ Web search provided correction for {file_path}")
+                        
+                else:  # Just content - match to affected files
+                    file_content = match if isinstance(match, str) else match[0]
+                    file_content = file_content.strip()
+                    
+                    # If there's only one affected file and we haven't found a correction yet
+                    if len(affected_files) == 1 and not found_files:
+                        target_file = affected_files[0]
+                        
+                        # Validate content based on file type
+                        is_valid = True
+                        if target_file.endswith('.json'):
+                            try:
+                                json.loads(file_content)
+                            except json.JSONDecodeError:
+                                is_valid = False
+                                continue
+                        
+                        if is_valid:
+                            corrected_files[target_file] = file_content
+                            found_files.add(target_file)
+                            print(f"[LocalRepo] ✅ Web search provided correction for {target_file} (single file match)")
+            
+            # If we found corrections with this pattern, stop trying other patterns
+            if found_files:
+                break
+        
+        # Special handling for file rename operations
+        if not corrected_files:
+            print(f"[LocalRepo] 🔍 No direct file corrections found, checking for file rename operations...")
+            
+            # Look for rename suggestions in the response
+            rename_patterns = [
+                r'rename\s+([^\s]+\.js)\s+to\s+([^\s]+\.jsx)',
+                r'change\s+([^\s]+\.js)\s+to\s+([^\s]+\.jsx)',
+                r'extension\s+of\s+([^\s]+\.js)\s+to\s+([^\s]+\.jsx)',
+                r'([^\s]+\.js)\s+to\s+([^\s]+\.jsx)',
+                r'name\s+the\s+file\s+with\s+the\s+\.jsx\s+.*?extension',
+                r'use\s+the\s+\.jsx\s+.*?extension',
+            ]
+            
+            for pattern in rename_patterns:
+                matches = re.findall(pattern, response_text, re.IGNORECASE)
+                for match in matches:
+                    if len(match) == 2:  # (old_file, new_file)
+                        old_file, new_file = match
+                        old_file = old_file.strip()
+                        new_file = new_file.strip()
+                        
+                        # Clean up paths
+                        if old_file.startswith('./'):
+                            old_file = old_file[2:]
+                        if new_file.startswith('./'):
+                            new_file = new_file[2:]
+                        
+                        # Check if the old file is one we're trying to fix
+                        if old_file in affected_files or old_file in affected_file_contents:
+                            # Get current content and convert it
+                            if old_file in affected_file_contents:
+                                current_content = affected_file_contents[old_file]
+                                
+                                # Convert CommonJS to ES modules for .js to .jsx rename
+                                if old_file.endswith('.js') and new_file.endswith('.jsx'):
+                                    converted_content = convert_commonjs_to_es_modules(current_content)
+                                    corrected_files[new_file] = converted_content
+                                    corrected_files[old_file] = None  # Mark for removal
+                                    print(f"[LocalRepo] ✅ Web search suggested rename: {old_file} → {new_file}")
+                                    found_files.add(new_file)
+                                    break
+                    elif 'jsx' in match or 'extension' in match:
+                        # Handle generic rename suggestions
+                        for affected_file in affected_files:
+                            if affected_file.endswith('.js') and affected_file in affected_file_contents:
+                                new_file = affected_file.replace('.js', '.jsx')
+                                current_content = affected_file_contents[affected_file]
+                                converted_content = convert_commonjs_to_es_modules(current_content)
+                                corrected_files[new_file] = converted_content
+                                corrected_files[affected_file] = None  # Mark for removal
+                                print(f"[LocalRepo] ✅ Web search suggested rename: {affected_file} → {new_file}")
+                                found_files.add(new_file)
+                                break
+                
+                if found_files:
+                    break
+        
+        # Enhanced debugging and fallback logic
+        if corrected_files:
+            print(f"[LocalRepo] 🎉 Web search successfully provided {len(corrected_files)} corrections")
+            return corrected_files
+        else:
+            print(f"[LocalRepo] ❌ Could not extract corrected files from web search response")
+            print(f"[LocalRepo] 🔍 Response preview: {response_text[:500]}...")
+            print(f"[LocalRepo] 🔍 Looking for corrections for: {affected_files}")
+            print(f"[LocalRepo] 🔍 Available file contents: {list(affected_file_contents.keys())}")
+            
+            # Enhanced debugging - show what patterns we found
+            for i, pattern in enumerate(patterns[:3]):  # Show first 3 patterns
+                pattern_matches = re.findall(pattern, response_text, re.IGNORECASE)
+                if pattern_matches:
+                    print(f"[LocalRepo] 🔍 Pattern {i+1} found {len(pattern_matches)} matches")
+                    for j, match in enumerate(pattern_matches[:2]):  # Show first 2 matches
+                        print(f"[LocalRepo] 🔍   Match {j+1}: {str(match)[:100]}...")
+            
+            # Fall back to regular LLM if web search didn't provide parseable results
+            print("[LocalRepo] 🔄 Falling back to regular LLM correction...")
+            return await fix_build_errors_with_llm(build_error, affected_files, package_dir_path, pr_info)
+            
+    except Exception as e:
+        print(f"[LocalRepo] ❌ Error during web search build error correction: {e}")
+        print("[LocalRepo] 🔄 Falling back to regular LLM correction...")
+        return await fix_build_errors_with_llm(build_error, affected_files, package_dir_path, pr_info)
