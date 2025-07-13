@@ -1306,115 +1306,145 @@ def compose_web_search_prompt(requirements: str, code: str, file_name: str, cont
     is_package_json = file_name.endswith('package.json')
     
     base_prompt = (
-        f"You are an expert AI code reviewer with access to real-time web search. Your job is to make ONLY ESSENTIAL corrections to the given file `{file_name}` "
-        f"to ensure it is free of errors and meets basic requirements. DO NOT over-engineer or modernize unnecessarily.\n\n"
-        f"🚨 **CONSERVATIVE APPROACH REQUIRED:**\n"
-        f"- Only make changes that are NECESSARY to fix actual problems\n"
-        f"- Do NOT refactor working code unless it has clear issues\n"
-        f"- Do NOT add new features or capabilities\n"
-        f"- Do NOT modernize code that is already working\n"
-        f"- Focus on: syntax errors, missing imports, type issues, obvious bugs\n"
-        f"- Avoid: performance optimizations, pattern changes, style improvements\n\n"
+        f"You are an expert AI code reviewer with access to real-time web search. Your job is to improve the given file `{file_name}` "
+        f"by fixing errors and making meaningful improvements while avoiding unnecessary features or new libraries.\n\n"
+        f"🎯 **IMPROVEMENT-FOCUSED APPROACH:**\n"
+        f"- Fix all syntax errors, missing imports, type issues, and obvious bugs\n"
+        f"- Improve code quality, readability, and maintainability\n"
+        f"- Optimize performance where beneficial and safe\n"
+        f"- Apply modern patterns and best practices when appropriate\n"
+        f"- Refactor code for better structure and clarity\n"
+        f"- DO NOT add new features or capabilities beyond what's needed\n"
+        f"- DO NOT add new libraries unless absolutely necessary for fixes\n"
+        f"- Focus on: error fixes, code improvements, performance optimizations, better patterns\n"
+        f"- Avoid: adding unnecessary features, introducing new dependencies\n\n"
         f"REQUIREMENTS FROM PROJECT:\n{requirements}\n\n"
         f"---\nRepository Context (other files for reference):\n{context}\n"
         f"---\nCurrent Code ({file_name} - {file_extension} file):\n```{file_extension}\n{code}\n```\n"
     )
     
     web_search_instructions = (
-        f"\n---\n🌐 **WEB SEARCH FOR ERROR PREVENTION:**\n"
-        f"Use web search to identify and prevent common errors, but be CONSERVATIVE:\n\n"
+        f"\n---\n🌐 **WEB SEARCH FOR IMPROVEMENTS AND ERROR PREVENTION:**\n"
+        f"Use web search to identify errors, improvements, and best practices:\n\n"
         f"1. **SEARCH for common build errors** with the specific technology/framework\n"
         f"2. **VERIFY syntax issues** and compatibility problems\n"
-        f"3. **CHECK for deprecated APIs** that might cause errors\n"
+        f"3. **CHECK for deprecated APIs** and modern alternatives\n"
         f"4. **FIND breaking changes** in dependencies that affect this code\n"
         f"5. **LOOK UP security vulnerabilities** that need immediate fixes\n"
-        f"6. **RESEARCH import/export issues** for the specific library versions\n\n"
-        f"🔍 **CONSERVATIVE SEARCH STRATEGY:**\n"
+        f"6. **RESEARCH import/export issues** for the specific library versions\n"
+        f"7. **SEARCH for performance optimizations** and best practices\n"
+        f"8. **LOOK UP modern patterns** and improved coding approaches\n\n"
+        f"🔍 **IMPROVEMENT-FOCUSED SEARCH STRATEGY:**\n"
         f"- Search for '{file_extension} common errors' or 'build errors'\n"
         f"- Search for specific error messages if code has issues\n"
         f"- Search for 'deprecated' + library name\n"
         f"- Search for 'security vulnerabilities' + library name\n"
+        f"- Search for 'performance optimization' + technology name\n"
+        f"- Search for 'best practices' + technology name\n"
+        f"- Search for 'modern patterns' + technology name\n"
         f"- Verify import syntax for current versions\n\n"
-        f"🎯 **ONLY PRIORITIZE ESSENTIAL FIXES:**\n"
+        f"🎯 **PRIORITIZE FIXES AND IMPROVEMENTS:**\n"
         f"- **SYNTAX ERRORS** - fix code that won't compile/run\n"
         f"- **MISSING IMPORTS** - add imports for undefined variables\n"
-        f"- **DEPRECATED APIS** - replace only if causing errors\n"
-        f"- **SECURITY ISSUES** - fix only critical vulnerabilities\n"
+        f"- **DEPRECATED APIS** - replace with modern alternatives\n"
+        f"- **SECURITY ISSUES** - fix vulnerabilities\n"
         f"- **BUILD ERRORS** - resolve compilation failures\n"
-        f"- **TYPE ERRORS** - fix TypeScript compilation issues\n\n"
-        f"❌ **DO NOT SEARCH FOR OR IMPLEMENT:**\n"
-        f"- Best practices or modern patterns\n"
-        f"- Performance optimizations\n"
-        f"- Style improvements\n"
-        f"- Feature enhancements\n"
-        f"- Code modernization\n"
+        f"- **TYPE ERRORS** - fix TypeScript compilation issues\n"
+        f"- **PERFORMANCE** - optimize slow operations\n"
+        f"- **CODE QUALITY** - improve readability and maintainability\n"
+        f"- **BEST PRACTICES** - apply modern patterns and conventions\n"
+        f"- **STRUCTURE** - refactor for better organization\n\n"
+        f"✅ **ENCOURAGED IMPROVEMENTS:**\n"
+        f"- Performance optimizations where beneficial\n"
+        f"- Code quality and readability improvements\n"
+        f"- Modern patterns and best practices\n"
+        f"- Better error handling and edge cases\n"
+        f"- Improved type safety and validation\n"
+        f"- Cleaner code structure and organization\n"
     )
     
     if is_package_json:
         dependency_instructions = (
-            f"\n---\n🔍 **CONSERVATIVE PACKAGE.JSON WEB SEARCH:**\n"
-            f"This is a package.json file. Use web search to identify CRITICAL issues only:\n\n"
-            f"1. **SEARCH for CRITICAL ISSUES only:**\n"
-            f"   - Security vulnerabilities that need immediate fixes\n"
+            f"\n---\n🔍 **IMPROVEMENT-FOCUSED PACKAGE.JSON WEB SEARCH:**\n"
+            f"This is a package.json file. Use web search to identify issues and improvements:\n\n"
+            f"1. **SEARCH for ISSUES AND IMPROVEMENTS:**\n"
+            f"   - Security vulnerabilities that need fixes\n"
             f"   - Breaking changes causing build failures\n"
-            f"   - Deprecated packages that are causing errors\n"
-            f"   - Version conflicts preventing installation\n\n"
+            f"   - Deprecated packages and modern alternatives\n"
+            f"   - Version conflicts preventing installation\n"
+            f"   - Performance improvements and optimizations\n"
+            f"   - Latest stable versions with better features\n\n"
             f"2. **VERIFY what's actually imported** in the context files\n"
-            f"   - Only remove dependencies that are clearly unused\n"
-            f"   - Only add dependencies that are imported but missing\n"
-            f"   - Be conservative about version changes\n\n"
-            f"3. **CONSERVATIVE SEARCH QUERIES:**\n"
+            f"   - Remove dependencies that are clearly unused\n"
+            f"   - Add dependencies that are imported but missing\n"
+            f"   - Update to better versions when beneficial\n"
+            f"   - Consider modern alternatives for deprecated packages\n\n"
+            f"3. **IMPROVEMENT-FOCUSED SEARCH QUERIES:**\n"
             f"   - '[package-name] security vulnerabilities'\n"
             f"   - '[package-name] deprecated breaking changes'\n"
             f"   - '[package-name] build errors'\n"
+            f"   - '[package-name] latest version features'\n"
+            f"   - '[package-name] performance improvements'\n"
+            f"   - '[package-name] modern alternatives'\n"
             f"   - 'npm install errors [package-name]'\n\n"
-            f"❌ **DO NOT SEARCH FOR OR IMPLEMENT:**\n"
-            f"   - Latest versions unless causing errors\n"
-            f"   - Modern alternatives unless current package is broken\n"
-            f"   - Performance optimizations\n"
-            f"   - Speculative improvements\n"
-            f"   - Package reorganization unless necessary\n\n"
-            f"💡 **PHILOSOPHY**: If package.json works, don't fix it\n"
-            f"- Only fix actual errors, not improvements\n"
-            f"- Be extremely conservative with version changes\n"
-            f"- Only add/remove dependencies for clear issues\n"
-            f"- When in doubt, leave it unchanged\n"
+            f"✅ **ENCOURAGED IMPROVEMENTS:**\n"
+            f"   - Update to latest stable versions when beneficial\n"
+            f"   - Replace deprecated packages with modern alternatives\n"
+            f"   - Add performance-optimized packages\n"
+            f"   - Improve dependency organization and structure\n"
+            f"   - Remove unused dependencies to reduce bundle size\n\n"
+            f"❌ **AVOID:**\n"
+            f"   - Adding unnecessary new dependencies\n"
+            f"   - Breaking changes without clear benefits\n"
+            f"   - Experimental or unstable versions\n"
+            f"   - Over-engineering the dependency structure\n\n"
+            f"💡 **PHILOSOPHY**: Improve package.json for better performance and maintainability\n"
+            f"- Fix actual errors and security issues\n"
+            f"- Update to better versions when beneficial\n"
+            f"- Optimize for performance and bundle size\n"
+            f"- Maintain compatibility while improving quality\n"
         )
     else:
         dependency_instructions = (
-            f"\n---\n📦 **CONSERVATIVE DEPENDENCY WEB SEARCH:**\n"
+            f"\n---\n📦 **IMPROVEMENT-FOCUSED DEPENDENCY WEB SEARCH:**\n"
             f"For import statements and dependencies:\n"
-            f"1. **SEARCH for ERROR-CAUSING ISSUES only:**\n"
+            f"1. **SEARCH for ISSUES AND IMPROVEMENTS:**\n"
             f"   - Syntax errors in imports\n"
-            f"   - Deprecated imports causing build failures\n"
+            f"   - Deprecated imports and modern alternatives\n"
             f"   - Missing imports for undefined variables\n"
-            f"   - Incorrect import paths\n\n"
-            f"2. **VERIFY ONLY WHEN THERE ARE ERRORS:**\n"
+            f"   - Incorrect import paths\n"
+            f"   - Performance-optimized import patterns\n"
+            f"   - Modern import/export best practices\n\n"
+            f"2. **VERIFY AND IMPROVE:**\n"
             f"   - Check if imports are causing build failures\n"
-            f"   - Look up breaking changes only if code is broken\n"
-            f"   - Search for compatibility issues only if needed\n\n"
-            f"🚫 **BUILD ERROR PREVENTION (ESSENTIAL ONLY):**\n"
+            f"   - Look up breaking changes and modern alternatives\n"
+            f"   - Search for compatibility issues and improvements\n"
+            f"   - Find better import patterns and optimizations\n\n"
+            f"🚀 **IMPROVEMENT-FOCUSED SEARCH:**\n"
             f"1. **Search for specific error messages** if code has issues\n"
-            f"2. **Check for deprecated APIs** only if they're causing errors\n"
-            f"3. **Find import/export problems** only if build is failing\n"
-            f"4. **Look up TypeScript errors** only if compilation fails\n\n"
-            f"❌ **DO NOT SEARCH FOR:**\n"
-            f"- Modern patterns or improvements\n"
-            f"- Performance optimizations\n"
-            f"- Style or structure improvements\n"
-            f"- Latest features or capabilities\n"
-            f"- Best practices unless fixing errors\n"
+            f"2. **Check for deprecated APIs** and modern alternatives\n"
+            f"3. **Find import/export problems** and best practices\n"
+            f"4. **Look up TypeScript errors** and type improvements\n"
+            f"5. **Search for performance optimizations** in imports\n"
+            f"6. **Find modern patterns** and better coding approaches\n\n"
+            f"✅ **ENCOURAGED IMPROVEMENTS:**\n"
+            f"- Modern import/export patterns\n"
+            f"- Performance optimizations in imports\n"
+            f"- Better type safety and validation\n"
+            f"- Cleaner import organization\n"
+            f"- Modern alternatives to deprecated APIs\n"
+            f"- Best practices for the specific technology\n"
         )
     
     format_instructions = (
         f"\n---\nPlease return the updated code and changes in the following EXACT format:\n"
-        f"### Changes:\n- A clean bullet-point summary of ESSENTIAL fixes only.\n\n"
-        f"### Updated Code:\n```{file_extension}\n<ONLY THE CORRECTED CODE HERE>\n```\n\n"
+        f"### Changes:\n- A clean bullet-point summary of fixes and improvements.\n\n"
+        f"### Updated Code:\n```{file_extension}\n<ONLY THE IMPROVED CODE HERE>\n```\n\n"
         f"⚠️ **CRITICAL REQUIREMENTS:**\n"
-        f"1. **CONSERVATIVE APPROACH**: Only make changes that fix actual problems\n"
-        f"2. **NO OVER-ENGINEERING**: Do not refactor working code\n"
-        f"3. **ESSENTIAL FIXES ONLY**: syntax errors, missing imports, type issues, obvious bugs\n"
-        f"4. **USE WEB SEARCH** only to verify error fixes, not for improvements\n"
+        f"1. **IMPROVEMENT-FOCUSED APPROACH**: Make changes that fix problems and improve code quality\n"
+        f"2. **BALANCED REFACTORING**: Improve working code while maintaining functionality\n"
+        f"3. **COMPREHENSIVE IMPROVEMENTS**: Fix errors, improve performance, apply best practices\n"
+        f"4. **USE WEB SEARCH** to find improvements, best practices, and modern patterns\n"
         f"5. **DO NOT include URLs, links, or citations** in the changes section\n"
         f"6. Do NOT use <think> tags or any other XML-like tags\n"
         f"7. Provide bullet-point summary of changes under the `### Changes` heading\n"
@@ -1422,17 +1452,19 @@ def compose_web_search_prompt(requirements: str, code: str, file_name: str, cont
         f"9. Do NOT show the old code again in your response\n"
         f"10. Do NOT suggest creating new files. Only update this file\n"
         f"11. The response must start with `### Changes:` and end with the code block\n"
-        f"12. Return ONLY the corrected code, not refactored code\n"
+        f"12. Return improved code with better quality, performance, and maintainability\n"
         f"13. Return the SAME TYPE of code as the original file ({file_extension})\n"
-        f"14. **IF NO ESSENTIAL FIXES ARE NEEDED:**\n"
-        f"    - In the ### Changes section, write: 'No essential changes needed.'\n"
+        f"14. **IF NO IMPROVEMENTS ARE NEEDED:**\n"
+        f"    - In the ### Changes section, write: 'No improvements needed.'\n"
         f"    - In the ### Updated Code section, return the original code unchanged.\n"
         f"15. **CHANGES FORMAT**: Use simple, clean bullet points like:\n"
         f"    - Fixed syntax error in import statement\n"
         f"    - Added missing import for undefined variable\n"
-        f"    - Corrected TypeScript type annotation\n"
-        f"    - Removed unused import causing build warning\n"
-        f"16. **CHANGES MUST BE ESSENTIAL**: Only report actual fixes, not improvements\n"
+        f"    - Optimized performance with better algorithm\n"
+        f"    - Applied modern patterns and best practices\n"
+        f"    - Improved code readability and maintainability\n"
+        f"    - Enhanced type safety and error handling\n"
+        f"16. **CHANGES SHOULD BE MEANINGFUL**: Report both fixes and improvements\n"
     )
     
     return base_prompt + web_search_instructions + dependency_instructions + format_instructions
@@ -2077,6 +2109,11 @@ Affected files that need to be fixed:
     - Solution: Fix the import paths to point to existing files
     - Use correct case sensitivity
 
+ 7. **JSX Extension Errors** (Parse error with JSX in .js files)
+    - Solution: Rename .js files containing JSX to .jsx extension
+    - Example: Rename `App.js` to `App.jsx` if it contains JSX syntax
+    - This is a common Vite/React issue where .js files with JSX need .jsx extension
+
 📦 **DEPENDENCY PHILOSOPHY: More dependencies = More problems**
 - Be EXTREMELY CONSERVATIVE about suggesting new dependencies
 - Try to fix errors by removing unused code rather than adding dependencies
@@ -2105,11 +2142,18 @@ For each file that needs changes, use this format:
  <CORRECTED FILE CONTENT HERE>
  ```
 
+**IMPORTANT FILE RENAMING INSTRUCTIONS:**
+- If you suggest renaming a file (e.g., .js to .jsx), provide the new filename in the header
+- Example: `#### src/App.jsx` (instead of `#### src/App.js`)
+- The system will automatically handle the file rename operation
+- Make sure to mention the rename in your Analysis section
+
 IMPORTANT: 
 - Only include files that actually need changes
 - Return the complete corrected file content for each file
 - Do NOT suggest adding new dependencies unless absolutely essential
-- Focus on removing unused code rather than adding new code"""
+- Focus on removing unused code rather than adding new code
+- If suggesting a file rename, use the new filename in the header"""
 
     try:
         # Use the existing MCP infrastructure
@@ -2194,6 +2238,20 @@ IMPORTANT:
                             return corrected_files
                     
                     print(f"[LocalRepo] 🔍 Full response preview: {response[:1000]}...")
+                    
+                    # Special handling for JSX extension issues
+                    if 'jsx' in response.lower() or 'extension' in response.lower():
+                        print(f"[LocalRepo] 🔍 Detected JSX/extension suggestions in LLM response")
+                        for affected_file in affected_files:
+                            if affected_file.endswith('.js') and affected_file in affected_file_contents:
+                                new_file = affected_file.replace('.js', '.jsx')
+                                current_content = affected_file_contents[affected_file]
+                                converted_content = convert_commonjs_to_es_modules(current_content)
+                                corrected_files[new_file] = converted_content
+                                corrected_files[affected_file] = None  # Mark for removal
+                                print(f"[LocalRepo] ✅ LLM suggested rename: {affected_file} → {new_file}")
+                                return corrected_files
+                    
                     return None
                     
     except Exception as e:
@@ -3435,6 +3493,17 @@ Please provide the corrected files with proper imports, exports, and syntax."""
                 r'([^\s]+\.js)\s+to\s+([^\s]+\.jsx)',
                 r'name\s+the\s+file\s+with\s+the\s+\.jsx\s+.*?extension',
                 r'use\s+the\s+\.jsx\s+.*?extension',
+                # More flexible patterns for web search responses
+                r'rename.*?([^\s]+\.js).*?([^\s]+\.jsx)',
+                r'change.*?([^\s]+\.js).*?([^\s]+\.jsx)',
+                r'([^\s]+\.js).*?\.jsx',
+                r'\.js.*?\.jsx',
+                # Generic JSX extension suggestions
+                r'\.jsx\s+extension',
+                r'use\s+\.jsx',
+                r'\.jsx\s+files',
+                r'rename.*?\.js.*?\.jsx',
+                r'change.*?\.js.*?\.jsx',
             ]
             
             for pattern in rename_patterns:
@@ -3478,6 +3547,20 @@ Please provide the corrected files with proper imports, exports, and syntax."""
                                 found_files.add(new_file)
                                 break
                 
+                # Additional check for any JSX-related suggestions in the response
+                if not found_files and ('jsx' in response_text.lower() or 'extension' in response_text.lower()):
+                    print(f"[LocalRepo] 🔍 Found JSX/extension suggestions in response, checking for .js files...")
+                    for affected_file in affected_files:
+                        if affected_file.endswith('.js') and affected_file in affected_file_contents:
+                            new_file = affected_file.replace('.js', '.jsx')
+                            current_content = affected_file_contents[affected_file]
+                            converted_content = convert_commonjs_to_es_modules(current_content)
+                            corrected_files[new_file] = converted_content
+                            corrected_files[affected_file] = None  # Mark for removal
+                            print(f"[LocalRepo] ✅ Web search suggested rename (generic): {affected_file} → {new_file}")
+                            found_files.add(new_file)
+                            break
+                
                 if found_files:
                     break
         
@@ -3498,6 +3581,21 @@ Please provide the corrected files with proper imports, exports, and syntax."""
                     print(f"[LocalRepo] 🔍 Pattern {i+1} found {len(pattern_matches)} matches")
                     for j, match in enumerate(pattern_matches[:2]):  # Show first 2 matches
                         print(f"[LocalRepo] 🔍   Match {j+1}: {str(match)[:100]}...")
+            
+            # Debug rename patterns
+            print(f"[LocalRepo] 🔍 Checking rename patterns...")
+            for i, pattern in enumerate(rename_patterns):
+                pattern_matches = re.findall(pattern, response_text, re.IGNORECASE)
+                if pattern_matches:
+                    print(f"[LocalRepo] 🔍 Rename pattern {i+1} found {len(pattern_matches)} matches")
+                    for j, match in enumerate(pattern_matches[:2]):
+                        print(f"[LocalRepo] 🔍   Rename match {j+1}: {str(match)[:100]}...")
+            
+            # Check for JSX/extension keywords
+            jsx_keywords = ['jsx', 'extension', 'rename', 'change']
+            found_keywords = [kw for kw in jsx_keywords if kw in response_text.lower()]
+            if found_keywords:
+                print(f"[LocalRepo] 🔍 Found keywords in response: {found_keywords}")
             
             # Fall back to regular LLM if web search didn't provide parseable results
             print("[LocalRepo] 🔄 Falling back to regular LLM correction...")
