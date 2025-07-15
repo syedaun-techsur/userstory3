@@ -2459,26 +2459,26 @@ IMPORTANT: Return ONLY the corrected package.json in the code block, not the ori
         print(f"[LocalRepo] ❌ Error during LLM package.json build error correction: {e}")
         return None
 
-async def fix_package_json_for_build_errors_with_web_search(package_json_content, build_error, package_dir_path, pr_info):
+async def fix_package_json_for_build_errors_with_web_search(package_json_content, build_error, package_dir_path, pr_info, return_raw_response=False):
     """
     Use OpenAI with web search to fix package.json based on build errors that indicate missing dependencies.
     This function uses web search to find current package versions and resolve dependency issues.
     Returns corrected package.json content or None if correction fails.
+    If return_raw_response is True, returns (corrected_json, response_text).
     """
     if not OPENAI_CLIENT:
         print("[LocalRepo] ⚠️ OpenAI client not available - falling back to regular LLM")
-        return await fix_package_json_for_build_errors(package_json_content, build_error, package_dir_path, pr_info)
-    
+        result = await fix_package_json_for_build_errors(package_json_content, build_error, package_dir_path, pr_info)
+        if return_raw_response:
+            return result, None
+        return result
     if not pr_info:
         print("[LocalRepo] 🔧 No PR info available for web search build dependency correction")
+        if return_raw_response:
+            return None, None
         return None
-    
     print(f"[LocalRepo] 🌐 Using OpenAI with web search to fix package.json for build dependency errors...")
-    
-    # Always use web search for build dependency errors (default behavior)
     print(f"[LocalRepo] 🌐 Using web search for build dependency errors (latest practices enabled)...")
-    
-    # Create web search prompt for build dependency errors
     web_search_prompt = f"""I'm getting build errors indicating missing dependencies. Here's the exact error:
 
 {build_error}
@@ -2496,70 +2496,61 @@ Please search for the current available packages and help me fix the missing dep
 4. Are there any package name changes or deprecations I should know about?
 
 Please provide a corrected package.json with the missing dependencies added based on what's currently available."""
-
     try:
-        # Use OpenAI Responses API with web search
         response = await asyncio.to_thread(
             OPENAI_CLIENT.responses.create,
             model="gpt-4.1-mini",
             tools=[{"type": "web_search_preview"}],
             input=web_search_prompt
         )
-        
-        # Extract the response text from Responses API
         if hasattr(response, 'output_text'):
             response_text = response.output_text
         else:
             print("[LocalRepo] ❌ Could not extract response from OpenAI web search")
+            if return_raw_response:
+                return None, None
             return None
-        
         print(f"[LocalRepo] 🌐 Web search completed, analyzing response...")
-        
-        # Parse the corrected package.json from the response
         patterns = [
-            # Pattern for explicit package.json mentions with JSON
             r'```json\s*//\s*package\.json[^\n]*\n([\s\S]*?)```',
             r'```json\s*package\.json[^\n]*\n([\s\S]*?)```',
-            # Pattern for corrected/fixed package.json
             r'(?:corrected|fixed|updated)\s+package\.json[:\s]*```json\n([\s\S]*?)```',
-            # Generic JSON pattern (most common)
             r'```json\n([\s\S]*?)```'
         ]
-        
         corrected_json = None
         for pattern in patterns:
             matches = re.findall(pattern, response_text, re.IGNORECASE)
-            
             for match in matches:
                 potential_json = match.strip() if isinstance(match, str) else match[0].strip()
-                
-                # Validate JSON
                 try:
                     parsed = json.loads(potential_json)
-                    # Check if it looks like a package.json (has name, dependencies, etc.)
                     if any(key in parsed for key in ['dependencies', 'devDependencies', 'name', 'scripts']):
                         corrected_json = potential_json
                         break
                 except json.JSONDecodeError:
-                    continue  # Skip invalid JSON
-            
+                    continue
             if corrected_json:
-                break  # Found valid package.json, stop trying other patterns
-        
+                break
         if corrected_json:
             print(f"[LocalRepo] 🎉 Web search successfully provided package.json correction for build dependencies")
+            if return_raw_response:
+                return corrected_json, response_text
             return corrected_json
         else:
             print(f"[LocalRepo] ❌ Could not extract corrected package.json from web search response")
             print(f"[LocalRepo] 🔍 Response preview: {response_text[:500]}...")
-            # Fall back to regular LLM if web search didn't provide parseable results
             print("[LocalRepo] 🔄 Falling back to regular LLM correction...")
-            return await fix_package_json_for_build_errors(package_json_content, build_error, package_dir_path, pr_info)
-            
+            result = await fix_package_json_for_build_errors(package_json_content, build_error, package_dir_path, pr_info)
+            if return_raw_response:
+                return result, response_text
+            return result
     except Exception as e:
         print(f"[LocalRepo] ❌ Error during web search package.json build dependency correction: {e}")
         print("[LocalRepo] 🔄 Falling back to regular LLM correction...")
-        return await fix_package_json_for_build_errors(package_json_content, build_error, package_dir_path, pr_info)
+        result = await fix_package_json_for_build_errors(package_json_content, build_error, package_dir_path, pr_info)
+        if return_raw_response:
+            return result, None
+        return result
 
 async def fix_build_errors_with_llm(build_error, affected_files, package_dir_path, pr_info):
     """
@@ -3592,7 +3583,8 @@ Do not include any explanation, just the JSON array."""
             # Check if this is a dependency-related build error
             is_dependency_error = any(keyword in full_build_error.lower() for keyword in [
                 'cannot find module', 'module not found', 'missing dependency', 
-                'package not found', 'type declarations', 'cannot resolve'
+                'package not found', 'type declarations', 'cannot resolve',
+                'vite:', 'rollup:'
             ])
             
             if is_dependency_error:
@@ -3608,68 +3600,68 @@ Do not include any explanation, just the JSON array."""
                         print(f"[LocalRepo] 🤖 Using LLM to fix package.json for dependency errors...")
                         
                         # Always use web search to fix package.json based on build dependency errors
-                        corrected_package_json = asyncio.run(
+                        corrected_package_json, last_llm_response = asyncio.run(
                             fix_package_json_for_build_errors_with_web_search(
                                 current_package_json,
                                 full_build_error,
                                 package_dir_path,
-                                pr_info
+                                pr_info,
+                                return_raw_response=True
                             )
-                        )
-                        
-                        # Check if the corrected package.json is actually different
-                        if corrected_package_json:
-                            # Normalize both JSONs for comparison (parse and re-serialize to remove formatting differences)
-                            try:
-                                current_parsed = json.loads(current_package_json)
-                                corrected_parsed = json.loads(corrected_package_json)
-                                
-                                # Compare the actual JSON content, not just string representation
-                                if current_parsed != corrected_parsed:
-                                    # Write corrected package.json
-                                    with open(package_json_path, "w", encoding="utf-8") as f:
-                                        f.write(corrected_package_json)
-                                    
-                                    print(f"[LocalRepo] ✅ Updated package.json to fix dependency errors")
-                                    
-                                    # Update regenerated_files with the correction
-                                    relative_package_path = os.path.join(package_dir, "package.json") if package_dir != "." else "package.json"
-                                    regenerated_files[relative_package_path] = {
-                                        "old_code": current_package_json,
-                                        "changes": f"LLM-corrected package.json to fix build dependency errors (attempt {attempt})",
-                                        "updated_code": corrected_package_json
-                                    }
-                                    
-                                    # Run npm install again with the updated package.json
-                                    print(f"[LocalRepo] 📦 Running npm install after package.json update...")
-                                    npm_install_success = run_npm_install_with_error_correction(
-                                        package_dir_path, relative_package_path, repo_path, regenerated_files, pr_info
-                                    )
-                                    
-                                    if npm_install_success:
-                                        print(f"[LocalRepo] ✅ npm install succeeded after package.json update")
-                                        
-                                        # Retry build with updated dependencies
-                                        print(f"[LocalRepo] 🔄 Retrying npm run build after dependency update...")
-                                        result = attempt_npm_build(package_dir_path)
-                                        
-                                        if result is not None and result.returncode == 0:
-                                            print(f"[LocalRepo] 🎉 npm run build succeeded after fixing dependencies!")
-                                            build_results.append(f"{package_file}: SUCCESS (after dependency fix in attempt {attempt})")
-                                            build_success = True
-                                            break
+                        ) if 'return_raw_response' in fix_package_json_for_build_errors_with_web_search.__code__.co_varnames else (
+                            asyncio.run(
+                                fix_package_json_for_build_errors_with_web_search(
+                                    current_package_json,
+                                    full_build_error,
+                                    package_dir_path,
+                                    pr_info
+                                )
+                            ), None)
+                        # If LLM/web search did not provide a valid package.json, check for npm install command
+                        if not corrected_package_json and last_llm_response:
+                            npm_install_match = re.search(r"npm install (@?[\w\-\/]+)", last_llm_response)
+                            if npm_install_match:
+                                missing_pkg = npm_install_match.group(1)
+                                print(f"[LocalRepo] 🛠️ LLM/web search suggested installing missing package: {missing_pkg}")
+                                # Add to dependencies in package.json
+                                try:
+                                    package_data = json.loads(current_package_json)
+                                    if 'dependencies' not in package_data:
+                                        package_data['dependencies'] = {}
+                                    if missing_pkg not in package_data['dependencies']:
+                                        package_data['dependencies'][missing_pkg] = "latest"
+                                        updated_package_json = json.dumps(package_data, indent=2)
+                                        with open(package_json_path, "w", encoding="utf-8") as f:
+                                            f.write(updated_package_json)
+                                        print(f"[LocalRepo] ✅ Added {missing_pkg} to dependencies in package.json")
+                                        # Update regenerated_files
+                                        relative_package_path = os.path.join(package_dir, "package.json") if package_dir != "." else "package.json"
+                                        regenerated_files[relative_package_path] = {
+                                            "old_code": current_package_json,
+                                            "changes": f"Added {missing_pkg} to dependencies based on LLM/web search suggestion (attempt {attempt})",
+                                            "updated_code": updated_package_json
+                                        }
+                                        # Run npm install
+                                        print(f"[LocalRepo] 📦 Running npm install after adding {missing_pkg}...")
+                                        npm_install_success = run_npm_install_with_error_correction(
+                                            package_dir_path, relative_package_path, repo_path, regenerated_files, pr_info
+                                        )
+                                        if npm_install_success:
+                                            print(f"[LocalRepo] ✅ npm install succeeded after adding {missing_pkg}")
+                                            # Retry build
+                                            print(f"[LocalRepo] 🔄 Retrying npm run build after adding {missing_pkg}...")
+                                            result = attempt_npm_build(package_dir_path)
+                                            if result is not None and result.returncode == 0:
+                                                print(f"[LocalRepo] 🎉 npm run build succeeded after adding {missing_pkg}!")
+                                                build_results.append(f"{package_file}: SUCCESS (after adding {missing_pkg} in attempt {attempt})")
+                                                build_success = True
+                                                break
+                                            else:
+                                                print(f"[LocalRepo] ⚠️ Build still failed after adding {missing_pkg}, continuing with source code corrections...")
                                         else:
-                                            print(f"[LocalRepo] ⚠️ Build still failed after dependency fix, continuing with source code corrections...")
-                                    else:
-                                        print(f"[LocalRepo] ❌ npm install failed after package.json update")
-                                else:
-                                    print(f"[LocalRepo] ⚠️ Web search provided package.json but no meaningful changes detected")
-                            except json.JSONDecodeError as e:
-                                print(f"[LocalRepo] ❌ Error parsing JSON for comparison: {e}")
-                                print(f"[LocalRepo] ⚠️ LLM didn't provide valid package.json correction")
-                        else:
-                            print(f"[LocalRepo] ⚠️ LLM didn't change package.json or correction failed")
-                            
+                                            print(f"[LocalRepo] ❌ npm install failed after adding {missing_pkg}")
+                                except Exception as e:
+                                    print(f"[LocalRepo] ❌ Error updating package.json with missing dependency: {e}")
                     except Exception as e:
                         print(f"[LocalRepo] ❌ Error trying to fix package.json for dependency errors: {e}")
             
@@ -3991,6 +3983,35 @@ def process_pr_with_local_repo(pr_info, regenerated_files):
             "updated_code": json.dumps(build_summary, indent=2)
         }
         
+        gradle_files_list = [f for f in regenerated_files.keys() if f.endswith("build.gradle") or f.endswith("build.gradle.kts")]
+        gradle_files_dict = {f: regenerated_files[f] for f in gradle_files_list}
+        gradle_build_status = "NO GRADLE FILES"
+        if gradle_files_list:
+            print(f"[LocalRepo] 🛠️ Gradle files detected: {gradle_files_list}")
+            gradle_build_results = []
+            for gradle_file in gradle_files_list:
+                gradle_dir = os.path.dirname(gradle_file) if os.path.dirname(gradle_file) else "."
+                gradle_dir_path = os.path.join(repo_path, gradle_dir)
+                print(f"[LocalRepo] 🛠️ Running gradle build in directory: {gradle_dir_path}")
+                gradle_success = run_gradle_build_with_error_correction(
+                    gradle_dir_path, gradle_file, repo_path, regenerated_files, pr_info
+                )
+                if gradle_success:
+                    gradle_build_results.append(f"{gradle_file}: SUCCESS")
+                else:
+                    gradle_build_results.append(f"{gradle_file}: FAILED")
+            if not gradle_build_results:
+                gradle_build_status = "NO GRADLE BUILDS RUN"
+            elif all("SUCCESS" in result for result in gradle_build_results):
+                gradle_build_status = "ALL GRADLE BUILDS SUCCESSFUL"
+            elif any("SUCCESS" in result for result in gradle_build_results):
+                gradle_build_status = "PARTIAL GRADLE SUCCESS"
+            else:
+                gradle_build_status = "ALL GRADLE BUILDS FAILED"
+            print(f"[LocalRepo] 🛠️ Gradle build summary:")
+            for result in gradle_build_results:
+                print(f"[LocalRepo]   - {result}")
+            print(f"[LocalRepo] 🛠️ Gradle build status: {gradle_build_status}")
     except Exception as e:
         print(f"[LocalRepo] ❌ Error during local repo processing: {e}")
         print("[LocalRepo] Continuing with original files...")
@@ -4633,3 +4654,212 @@ def extract_java_external_dependencies(content: str) -> Set[str]:
         print(f"[Java] ⚠️ Error extracting Java external dependencies: {e}")
     
     return external_deps
+
+def run_gradle_build_with_error_correction(gradle_dir_path, gradle_file, repo_path, regenerated_files, pr_info):
+    """
+    Run gradle build with intelligent error correction using LLM in a loop.
+    Keeps trying until success or max retries reached.
+    Returns True if successful, False otherwise.
+    """
+    MAX_CORRECTION_ATTEMPTS = 10  # Maximum number of LLM correction attempts
+
+    def attempt_gradle_build():
+        """Helper function to attempt gradle build"""
+        gradlew_path = os.path.join(gradle_dir_path, 'gradlew')
+        if os.path.exists(gradlew_path):
+            cmd = ['./gradlew', 'build', '--no-daemon', '--stacktrace']
+        else:
+            cmd = ['gradle', 'build', '--no-daemon', '--stacktrace']
+        try:
+            result = subprocess.run(
+                cmd,
+                cwd=gradle_dir_path,
+                capture_output=True,
+                text=True,
+                timeout=900  # 15 minute timeout
+            )
+            return result
+        except subprocess.TimeoutExpired:
+            print(f"[LocalRepo] ❌ gradle build timed out after 15 minutes in {gradle_dir_path}")
+            return None
+        except FileNotFoundError:
+            print("[LocalRepo] ❌ gradle/gradlew not found. Please ensure Gradle is installed.")
+            return None
+        except Exception as e:
+            print(f"[LocalRepo] ❌ Error during gradle build in {gradle_dir_path}: {e}")
+            return None
+
+    # Initial attempt
+    print(f"[LocalRepo] 🛠️ Attempting gradle build in {gradle_dir_path}")
+    result = attempt_gradle_build()
+
+    if result is None:
+        return False
+
+    if result.returncode == 0:
+        print(f"[LocalRepo] ✅ gradle build completed successfully in {gradle_dir_path}")
+        return True
+
+    # Start the correction loop
+    print(f"[LocalRepo] 🔄 Starting LLM error correction loop for Gradle (max {MAX_CORRECTION_ATTEMPTS} attempts)...")
+
+    original_gradle_file = None
+    correction_history = []
+
+    for attempt in range(1, MAX_CORRECTION_ATTEMPTS + 1):
+        print(f"[LocalRepo] 🤖 Gradle LLM Correction Attempt {attempt}/{MAX_CORRECTION_ATTEMPTS}")
+
+        if result is None:
+            print(f"[LocalRepo] ❌ gradle build attempt returned None (timeout/error)")
+            break
+
+        print(f"[LocalRepo] ❌ gradle build failed with return code {result.returncode}")
+        print(f"[LocalRepo] 📄 Error output:")
+        print(f"[LocalRepo] stdout: {result.stdout}")
+        print(f"[LocalRepo] stderr: {result.stderr}")
+
+        # Get current gradle file content
+        gradle_file_path = os.path.join(gradle_dir_path, os.path.basename(gradle_file))
+        try:
+            with open(gradle_file_path, "r", encoding="utf-8") as f:
+                current_gradle_content = f.read()
+            if original_gradle_file is None:
+                original_gradle_file = current_gradle_content
+        except Exception as e:
+            print(f"[LocalRepo] ❌ Could not read {gradle_file} for error correction: {e}")
+            return False
+
+        # Combine error output for LLM analysis
+        full_error = f"STDOUT:\n{result.stdout}\n\nSTDERR:\n{result.stderr}"
+        correction_context = ""
+        if correction_history:
+            correction_context = f"\n\nPREVIOUS CORRECTIONS APPLIED:\n" + "\n".join([f"Attempt {i+1}: {corr}" for i, corr in enumerate(correction_history)])
+
+        print(f"[LocalRepo] 🤖 Sending Gradle error to LLM for analysis...")
+
+        # Always use web search for error correction
+        try:
+            corrected_gradle_content = asyncio.run(
+                fix_gradle_errors_with_web_search(
+                    current_gradle_content,
+                    full_error + correction_context,
+                    gradle_file,
+                    pr_info
+                )
+            )
+        except Exception as e:
+            print(f"[LocalRepo] ❌ Error running LLM Gradle correction: {e}")
+            continue
+
+        if not corrected_gradle_content:
+            print(f"[LocalRepo] ❌ LLM could not provide a valid Gradle correction for attempt {attempt}")
+            continue
+
+        if corrected_gradle_content.strip() == current_gradle_content.strip():
+            print(f"[LocalRepo] ⚠️ LLM returned same gradle file (no changes) - may be stuck")
+            continue
+
+        # Write corrected gradle file back
+        try:
+            with open(gradle_file_path, "w", encoding="utf-8") as f:
+                f.write(corrected_gradle_content)
+            print(f"[LocalRepo] ✅ Applied LLM Gradle correction attempt {attempt}")
+            correction_history.append(f"Fixed Gradle dependency/configuration issues")
+        except Exception as e:
+            print(f"[LocalRepo] ❌ Error writing corrected gradle file: {e}")
+            continue
+
+        # Retry gradle build
+        print(f"[LocalRepo] 🔄 Retrying gradle build with LLM correction {attempt}...")
+        result = attempt_gradle_build()
+
+        if result is None:
+            continue
+        if result.returncode == 0:
+            print(f"[LocalRepo] 🎉 gradle build succeeded after {attempt} LLM correction(s)!")
+            correction_summary = f"LLM-corrected {os.path.basename(gradle_file)} after {attempt} iteration(s) to fix Gradle build failures"
+            regenerated_files[gradle_file] = {
+                "old_code": original_gradle_file or current_gradle_content,
+                "changes": correction_summary,
+                "updated_code": corrected_gradle_content
+            }
+            return True
+        print(f"[LocalRepo] ⚠️ gradle build still failed after correction {attempt}, trying next iteration...")
+
+    print(f"[LocalRepo] ❌ gradle build failed after {MAX_CORRECTION_ATTEMPTS} LLM correction attempts")
+    if result is not None:
+        print(f"[LocalRepo] 📄 Final error output:")
+        print(f"[LocalRepo] stdout: {result.stdout}")
+        print(f"[LocalRepo] stderr: {result.stderr}")
+    else:
+        print(f"[LocalRepo] 📄 Final attempt resulted in timeout/error (no output available)")
+
+    if original_gradle_file and correction_history:
+        with open(os.path.join(gradle_dir_path, os.path.basename(gradle_file)), "r", encoding="utf-8") as f:
+            final_gradle_content = f.read()
+        correction_summary = f"LLM attempted {len(correction_history)} correction(s) but gradle build still failed"
+        regenerated_files[gradle_file] = {
+            "old_code": original_gradle_file,
+            "changes": correction_summary,
+            "updated_code": final_gradle_content
+        }
+    return False
+
+async def fix_gradle_errors_with_web_search(gradle_content, gradle_error, gradle_file_path, pr_info):
+    """
+    Use OpenAI with web search to fix Gradle build.gradle/build.gradle.kts based on build errors.
+    Returns corrected gradle file content or None if correction fails.
+    """
+    if not OPENAI_CLIENT:
+        print("[LocalRepo] ⚠️ OpenAI client not available - falling back to regular LLM")
+        return await fix_gradle_errors_with_llm(gradle_content, gradle_error, gradle_file_path, pr_info)
+    if not pr_info:
+        print("[LocalRepo] 🔧 No PR info available for web search Gradle error correction")
+        return None
+    print(f"[LocalRepo] 🌐 Using OpenAI with web search to fix Gradle errors...")
+    web_search_prompt = f"""I'm getting Gradle build errors. Here's the exact error:\n\n{gradle_error}\n\nCurrent {gradle_file_path}:\n```gradle\n{gradle_content}\n```\n\nPlease search for the current information and help me fix these Gradle errors. I need:\n\n1. What are the current stable versions of the failing dependencies?\n2. How to fix dependency conflicts and version issues?\n3. What are the correct Gradle configurations for Spring Boot or Java?\n4. How to resolve compilation and plugin errors?\n5. Modern Gradle best practices and configurations\n\nPlease provide a corrected {gradle_file_path} with working dependencies and configurations."""
+    try:
+        response = await asyncio.to_thread(
+            OPENAI_CLIENT.responses.create,
+            model="gpt-4.1-mini",
+            tools=[{"type": "web_search_preview"}],
+            input=web_search_prompt
+        )
+        if hasattr(response, 'output_text'):
+            response_text = response.output_text
+        else:
+            print("[LocalRepo] ❌ Could not extract response from OpenAI web search")
+            return None
+        print(f"[LocalRepo] 🌐 Web search completed, analyzing response...")
+        patterns = [
+            r'```gradle[\s\S]*?\n([\s\S]*?)```',
+            r'```groovy[\s\S]*?\n([\s\S]*?)```',
+            r'```kotlin[\s\S]*?\n([\s\S]*?)```',
+            r'```[a-zA-Z0-9]*\n([\s\S]*?)```'
+        ]
+        corrected_gradle = None
+        for pattern in patterns:
+            matches = re.findall(pattern, response_text, re.IGNORECASE)
+            for match in matches:
+                potential_gradle = match.strip() if isinstance(match, str) else match[0].strip()
+                if 'dependencies' in potential_gradle or 'plugins' in potential_gradle:
+                    corrected_gradle = potential_gradle
+                    break
+            if corrected_gradle:
+                break
+        if corrected_gradle:
+            print(f"[LocalRepo] 🎉 Web search successfully provided gradle correction")
+            return corrected_gradle
+        else:
+            print(f"[LocalRepo] ❌ Could not extract corrected gradle file from web search response")
+            print(f"[LocalRepo] 🔍 Response preview: {response_text[:500]}...")
+            print("[LocalRepo] 🔄 Falling back to regular LLM correction...")
+            return await fix_gradle_errors_with_llm(gradle_content, gradle_error, gradle_file_path, pr_info)
+    except Exception as e:
+        print(f"[LocalRepo] ❌ Error during web search Gradle error correction: {e}")
+        print("[LocalRepo] 🔄 Falling back to regular LLM correction...")
+        return await fix_gradle_errors_with_llm(gradle_content, gradle_error, gradle_file_path, pr_info)
+
+async def fix_gradle_errors_with_llm(gradle_content, gradle_error, gradle_file_path, pr_info):
+    print(f"[LocalRepo] 🤖 (STUB) Would use LLM to fix Gradle errors for {gradle_file_path}")
+    return None
