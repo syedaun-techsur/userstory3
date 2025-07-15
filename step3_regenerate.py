@@ -85,6 +85,9 @@ MAX_CONTEXT_CHARS = 4000000  # GPT-4.1 Mini has 1M+ token context window (1M tok
 # External dependency tracking for package.json optimization
 EXTERNAL_DEPENDENCY_STORE = {}
 
+# Project structure detection and build system support
+PROJECT_STRUCTURE_CACHE = {}
+
 def extract_external_dependencies(file_path: str, file_content: str) -> Set[str]:
     """
     Extract external dependencies (npm packages) from a file's import statements.
@@ -101,6 +104,10 @@ def extract_external_dependencies(file_path: str, file_content: str) -> Set[str]
             external_deps.update(extract_python_external_dependencies(file_content))
         elif file_ext in ['json']:
             external_deps.update(extract_json_external_dependencies(file_content, file_path))
+        elif file_ext in ['java']:
+            external_deps.update(extract_java_external_dependencies(file_content))
+        elif file_ext in ['xml'] and file_path.endswith('pom.xml'):
+            external_deps.update(extract_maven_dependencies(file_content))
         # Add more languages as needed
         
     except Exception as e:
@@ -201,6 +208,463 @@ def extract_json_external_dependencies(content: str, file_path: str) -> Set[str]
         pass
     
     return external_deps
+
+async def fix_maven_errors_with_web_search(pom_content, maven_error, pom_file_path, pr_info):
+    """
+    Use OpenAI with web search to fix Maven pom.xml based on build errors.
+    Returns corrected pom.xml content or None if correction fails.
+    """
+    if not OPENAI_CLIENT:
+        print("[LocalRepo] ⚠️ OpenAI client not available - falling back to regular LLM")
+        return await fix_maven_errors_with_llm(pom_content, maven_error, pom_file_path, pr_info)
+    
+    if not pr_info:
+        print("[LocalRepo] 🔧 No PR info available for web search Maven error correction")
+        return None
+    
+    print(f"[LocalRepo] 🌐 Using OpenAI with web search to fix Maven errors...")
+    
+    # Create web search prompt for Maven errors
+    web_search_prompt = f"""I'm getting Maven build errors. Here's the exact error:
+
+{maven_error}
+
+Current pom.xml:
+```xml
+{pom_content}
+```
+
+Please search for the current information and help me fix these Maven errors. I need:
+
+1. What are the current stable versions of the failing dependencies?
+2. How to fix dependency conflicts and version issues?
+3. What are the correct Maven configurations for Spring Boot?
+4. How to resolve compilation and plugin errors?
+5. Modern Maven best practices and configurations
+
+Please provide a corrected pom.xml with working dependencies and configurations."""
+
+    try:
+        # Use OpenAI Responses API with web search
+        response = await asyncio.to_thread(
+            OPENAI_CLIENT.responses.create,
+            model="gpt-4.1-mini",
+            tools=[{"type": "web_search_preview"}],
+            input=web_search_prompt
+        )
+        
+        # Extract the response text from Responses API
+        if hasattr(response, 'output_text'):
+            response_text = response.output_text
+        else:
+            print("[LocalRepo] ❌ Could not extract response from OpenAI web search")
+            return None
+        
+        print(f"[LocalRepo] 🌐 Web search completed, analyzing response...")
+        
+        # Parse the corrected pom.xml from the response
+        patterns = [
+            # Pattern for explicit pom.xml mentions with XML
+            r'```xml\s*//\s*pom\.xml[^\n]*\n([\s\S]*?)```',
+            r'```xml\s*pom\.xml[^\n]*\n([\s\S]*?)```',
+            # Pattern for corrected/fixed pom.xml
+            r'(?:corrected|fixed|updated)\s+pom\.xml[:\s]*```xml\n([\s\S]*?)```',
+            # Generic XML pattern (most common)
+            r'```xml\n([\s\S]*?)```'
+        ]
+        
+        corrected_xml = None
+        for pattern in patterns:
+            matches = re.findall(pattern, response_text, re.IGNORECASE)
+            
+            for match in matches:
+                potential_xml = match.strip() if isinstance(match, str) else match[0].strip()
+                
+                # Basic XML validation - check if it looks like a pom.xml
+                if ('<project' in potential_xml and '</project>' in potential_xml and 
+                    ('groupId' in potential_xml or 'artifactId' in potential_xml)):
+                    corrected_xml = potential_xml
+                    break
+            
+            if corrected_xml:
+                break  # Found valid pom.xml, stop trying other patterns
+        
+        if corrected_xml:
+            print(f"[LocalRepo] 🎉 Web search successfully provided pom.xml correction")
+            return corrected_xml
+        else:
+            print(f"[LocalRepo] ❌ Could not extract corrected pom.xml from web search response")
+            print(f"[LocalRepo] 🔍 Response preview: {response_text[:500]}...")
+            # Fall back to regular LLM if web search didn't provide parseable results
+            print("[LocalRepo] 🔄 Falling back to regular LLM correction...")
+            return await fix_maven_errors_with_llm(pom_content, maven_error, pom_file_path, pr_info)
+            
+    except Exception as e:
+        print(f"[LocalRepo] ❌ Error during web search Maven error correction: {e}")
+        print("[LocalRepo] 🔄 Falling back to regular LLM correction...")
+        return await fix_maven_errors_with_llm(pom_content, maven_error, pom_file_path, pr_info)
+
+async def fix_maven_errors_with_llm(pom_content, maven_error, pom_file_path, pr_info):
+    """
+    Use LLM to fix Maven pom.xml based on build errors.
+    Returns corrected pom.xml content or None if correction fails.
+    """
+    if not pr_info:
+        print("[LocalRepo] 🔧 No PR info available for LLM Maven error correction")
+        return None
+    
+    print(f"[LocalRepo] 🤖 Using LLM to fix Maven errors...")
+    
+    # Create Maven error correction prompt
+    maven_error_prompt = f"""You are an expert Maven and Spring Boot developer. A Maven build failed with the following error:
+
+---
+MAVEN BUILD ERROR:
+{maven_error}
+---
+
+Current pom.xml content:
+```xml
+{pom_content}
+```
+
+🔍 **MAVEN ERROR ANALYSIS:**
+The Maven build errors indicate issues with dependencies, plugins, or configuration. Common patterns:
+1. **"Could not resolve dependencies"** - Version conflicts or missing repositories
+2. **"Plugin execution not covered by lifecycle"** - Plugin configuration issues
+3. **"Compilation failure"** - Java version or source compatibility issues
+4. **"Failed to execute goal"** - Plugin or dependency issues
+
+📦 **MAVEN PHILOSOPHY: Stable and Compatible Dependencies**
+- Use stable, well-tested versions of dependencies
+- Ensure compatibility between Spring Boot version and other dependencies
+- Fix version conflicts and missing dependencies
+- Use proper Maven plugin configurations
+
+🔧 **CRITICAL INSTRUCTIONS:**
+1. ANALYZE the Maven error to identify the exact problem
+2. FIX dependency versions, conflicts, and missing dependencies
+3. ENSURE proper plugin configurations
+4. VERIFY Java version compatibility
+5. Use stable Spring Boot versions and compatible dependencies
+6. Keep the pom.xml structure clean and valid
+
+Return your response in this EXACT format:
+
+### Analysis:
+- Brief explanation of the Maven errors and how you fixed them
+
+### Fixed pom.xml:
+```xml
+<CORRECTED POM.XML CONTENT HERE>
+```
+
+IMPORTANT: Return ONLY the corrected pom.xml in the XML code block."""
+
+    try:
+        # Use the existing MCP infrastructure
+        server_params = StdioServerParameters(command="python", args=["server.py"])
+        
+        async with stdio_client(server_params) as (read_stream, write_stream):
+            async with ClientSession(read_stream, write_stream) as session:
+                await session.initialize()
+                
+                # Call LLM for Maven error correction
+                result = await asyncio.wait_for(
+                    session.call_tool("codegen", arguments={"prompt": maven_error_prompt}),
+                    timeout=120  # 2 minute timeout for Maven error correction
+                )
+                
+                # Extract response
+                response = extract_response_content(result, "maven_error_correction")
+                
+                # Parse the corrected pom.xml
+                corrected_xml = extract_updated_code(response)
+                if corrected_xml:
+                    # Basic XML validation
+                    if ('<project' in corrected_xml and '</project>' in corrected_xml and 
+                        ('groupId' in corrected_xml or 'artifactId' in corrected_xml)):
+                        print(f"[LocalRepo] ✅ LLM provided valid pom.xml correction")
+                        return corrected_xml
+                    else:
+                        print(f"[LocalRepo] ❌ LLM correction doesn't look like valid pom.xml")
+                        return None
+                else:
+                    print(f"[LocalRepo] ❌ Could not extract corrected pom.xml from LLM response")
+                    return None
+                    
+    except Exception as e:
+        print(f"[LocalRepo] ❌ Error during LLM Maven error correction: {e}")
+        return None
+
+async def fix_springboot_errors_with_web_search(springboot_error, maven_dir_path, pr_info):
+    """
+    Use OpenAI with web search to fix Spring Boot configuration and code errors.
+    Returns dict of corrected files or None if correction fails.
+    """
+    if not OPENAI_CLIENT:
+        print("[LocalRepo] ⚠️ OpenAI client not available - falling back to regular LLM")
+        return await fix_springboot_errors_with_llm(springboot_error, maven_dir_path, pr_info)
+    
+    if not pr_info:
+        print("[LocalRepo] 🔧 No PR info available for web search Spring Boot error correction")
+        return None
+    
+    print(f"[LocalRepo] 🌐 Using OpenAI with web search to fix Spring Boot errors...")
+    
+    # Get common Spring Boot configuration files
+    config_files = {}
+    common_config_paths = [
+        'src/main/resources/application.properties',
+        'src/main/resources/application.yml',
+        'src/main/resources/application.yaml',
+        'src/main/java/Application.java',
+        'src/main/java/com/example/Application.java'
+    ]
+    
+    for config_path in common_config_paths:
+        full_path = os.path.join(maven_dir_path, config_path)
+        if os.path.exists(full_path):
+            try:
+                with open(full_path, 'r', encoding='utf-8') as f:
+                    config_files[config_path] = f.read()
+            except Exception as e:
+                print(f"[LocalRepo] ⚠️ Could not read {config_path}: {e}")
+    
+    # Create web search prompt for Spring Boot errors
+    files_context = ""
+    for file_path, content in config_files.items():
+        files_context += f"\n\n--- {file_path} ---\n```\n{content}\n```"
+    
+    web_search_prompt = f"""I'm getting Spring Boot server startup errors. Here's the exact error:
+
+{springboot_error}
+
+Current Spring Boot configuration files:
+{files_context}
+
+Please search for the current information and help me fix these Spring Boot errors. I need:
+
+1. How to fix Spring Boot configuration issues?
+2. What are the correct application.properties/yml settings?
+3. How to resolve bean creation and dependency injection errors?
+4. What are the current Spring Boot best practices?
+5. How to fix port conflicts and server startup issues?
+
+Please provide corrected configuration files to fix the Spring Boot startup errors."""
+
+    try:
+        # Use OpenAI Responses API with web search
+        response = await asyncio.to_thread(
+            OPENAI_CLIENT.responses.create,
+            model="gpt-4.1-mini",
+            tools=[{"type": "web_search_preview"}],
+            input=web_search_prompt
+        )
+        
+        # Extract the response text from Responses API
+        if hasattr(response, 'output_text'):
+            response_text = response.output_text
+        else:
+            print("[LocalRepo] ❌ Could not extract response from OpenAI web search")
+            return None
+        
+        print(f"[LocalRepo] 🌐 Web search completed, analyzing response...")
+        
+        # Parse the corrected files from the response
+        corrected_files = {}
+        
+        # Enhanced patterns for extracting Spring Boot configuration files
+        patterns = [
+            # Pattern for specific file types
+            r'```(?:properties|yaml|yml)\s*//\s*([^\n]*\.(?:properties|yml|yaml))[^\n]*\n([\s\S]*?)```',
+            r'```(?:properties|yaml|yml)\s*([^\n]*\.(?:properties|yml|yaml))[^\n]*\n([\s\S]*?)```',
+            r'```java\s*//\s*([^\n]*\.java)[^\n]*\n([\s\S]*?)```',
+            r'```java\s*([^\n]*\.java)[^\n]*\n([\s\S]*?)```',
+            
+            # Pattern for application config files
+            r'(application\.(?:properties|yml|yaml))\s*[:\n]+\s*```[a-zA-Z0-9]*\n([\s\S]*?)```',
+            r'(Application\.java)\s*[:\n]+\s*```[a-zA-Z0-9]*\n([\s\S]*?)```',
+            
+            # Generic patterns
+            r'```[a-zA-Z0-9]*\n([\s\S]*?)```'
+        ]
+        
+        for pattern in patterns:
+            matches = re.findall(pattern, response_text, re.IGNORECASE)
+            
+            for match in matches:
+                if len(match) == 2:  # (filename, content)
+                    file_path, file_content = match
+                    file_path = file_path.strip()
+                    file_content = file_content.strip()
+                    
+                    # Check if this is a configuration file we're looking for
+                    if any(file_path.endswith(ext) for ext in ['.properties', '.yml', '.yaml', '.java']):
+                        corrected_files[file_path] = file_content
+                        print(f"[LocalRepo] ✅ Web search provided correction for {file_path}")
+                else:  # Just content
+                    file_content = match if isinstance(match, str) else match[0]
+                    file_content = file_content.strip()
+                    
+                    # If there's only one config file and we haven't found a correction yet
+                    if len(config_files) == 1 and not corrected_files:
+                        config_file_path = list(config_files.keys())[0]
+                        corrected_files[config_file_path] = file_content
+                        print(f"[LocalRepo] ✅ Web search provided correction for {config_file_path} (single file match)")
+            
+            if corrected_files:
+                break  # Found files with this pattern, stop trying others
+        
+        if corrected_files:
+            print(f"[LocalRepo] 🎉 Web search successfully provided {len(corrected_files)} Spring Boot corrections")
+            return corrected_files
+        else:
+            print(f"[LocalRepo] ❌ Could not extract corrected files from web search response")
+            print(f"[LocalRepo] 🔍 Response preview: {response_text[:500]}...")
+            # Fall back to regular LLM if web search didn't provide parseable results
+            print("[LocalRepo] 🔄 Falling back to regular LLM correction...")
+            return await fix_springboot_errors_with_llm(springboot_error, maven_dir_path, pr_info)
+            
+    except Exception as e:
+        print(f"[LocalRepo] ❌ Error during web search Spring Boot error correction: {e}")
+        print("[LocalRepo] 🔄 Falling back to regular LLM correction...")
+        return await fix_springboot_errors_with_llm(springboot_error, maven_dir_path, pr_info)
+
+async def fix_springboot_errors_with_llm(springboot_error, maven_dir_path, pr_info):
+    """
+    Use LLM to fix Spring Boot configuration and code errors.
+    Returns dict of corrected files or None if correction fails.
+    """
+    if not pr_info:
+        print("[LocalRepo] 🔧 No PR info available for LLM Spring Boot error correction")
+        return None
+    
+    print(f"[LocalRepo] 🤖 Using LLM to fix Spring Boot errors...")
+    
+    # Get common Spring Boot configuration files
+    config_files = {}
+    common_config_paths = [
+        'src/main/resources/application.properties',
+        'src/main/resources/application.yml',
+        'src/main/resources/application.yaml',
+        'src/main/java/Application.java',
+        'src/main/java/com/example/Application.java'
+    ]
+    
+    for config_path in common_config_paths:
+        full_path = os.path.join(maven_dir_path, config_path)
+        if os.path.exists(full_path):
+            try:
+                with open(full_path, 'r', encoding='utf-8') as f:
+                    config_files[config_path] = f.read()
+            except Exception as e:
+                print(f"[LocalRepo] ⚠️ Could not read {config_path}: {e}")
+    
+    if not config_files:
+        print("[LocalRepo] ❌ No Spring Boot configuration files found for error correction")
+        return None
+    
+    # Create Spring Boot error correction prompt
+    files_context = ""
+    for file_path, content in config_files.items():
+        files_context += f"\n\n--- {file_path} ---\n```\n{content}\n```"
+    
+    springboot_error_prompt = f"""You are an expert Spring Boot developer. A Spring Boot server failed to start with the following error:
+
+---
+SPRING BOOT ERROR:
+{springboot_error}
+---
+
+Current Spring Boot configuration files:
+{files_context}
+
+🚀 **SPRING BOOT ERROR ANALYSIS:**
+The Spring Boot startup errors indicate configuration or code issues. Common patterns:
+1. **"Port already in use"** - Change server port in application.properties
+2. **"Bean creation failed"** - Configuration or dependency injection issues
+3. **"No qualifying bean"** - Missing component annotations or configuration
+4. **"Failed to configure a DataSource"** - Database configuration issues (we assume no database for now)
+
+🔧 **CRITICAL INSTRUCTIONS:**
+1. ANALYZE the Spring Boot error to identify the exact problem
+2. FIX configuration issues in application.properties/yml
+3. ENSURE proper Spring Boot annotations and configurations
+4. RESOLVE port conflicts and server startup issues
+5. Remove or comment out database-related configurations if no database is used
+6. Use standard Spring Boot configurations and best practices
+
+Return your response in this EXACT format:
+
+### Analysis:
+- Brief explanation of the Spring Boot errors and how you fixed them
+
+### Fixed Files:
+For each file that needs changes, use this format:
+
+#### {{file_path}}
+```
+<CORRECTED FILE CONTENT HERE>
+```
+
+IMPORTANT: Only include files that actually need changes."""
+
+    try:
+        # Use the existing MCP infrastructure
+        server_params = StdioServerParameters(command="python", args=["server.py"])
+        
+        async with stdio_client(server_params) as (read_stream, write_stream):
+            async with ClientSession(read_stream, write_stream) as session:
+                await session.initialize()
+                
+                # Call LLM for Spring Boot error correction
+                result = await asyncio.wait_for(
+                    session.call_tool("codegen", arguments={"prompt": springboot_error_prompt}),
+                    timeout=180  # 3 minute timeout for Spring Boot error correction
+                )
+                
+                # Extract response
+                response = extract_response_content(result, "springboot_error_correction")
+                
+                # Parse the corrected files from the response
+                corrected_files = {}
+                
+                # Enhanced patterns to extract file corrections
+                patterns = [
+                    # Pattern 1: #### filename with code block
+                    r'#### ([^\n{]+)\n```[a-zA-Z0-9]*\n([\s\S]*?)```',
+                    # Pattern 2: Look for specific Spring Boot files
+                    r'#### (src/main/resources/application\.(?:properties|yml|yaml))\n```[a-zA-Z0-9]*\n([\s\S]*?)```',
+                    r'#### (src/main/java/.*?\.java)\n```[a-zA-Z0-9]*\n([\s\S]*?)```',
+                    # Pattern 3: Generic file patterns
+                    r'([a-zA-Z0-9_./\-]+\.(?:properties|yml|yaml|java))\s*:?\s*```[a-zA-Z0-9]*\n([\s\S]*?)```',
+                ]
+                
+                for pattern in patterns:
+                    file_sections = re.findall(pattern, response, re.IGNORECASE)
+                    
+                    for file_path, file_content in file_sections:
+                        file_path = file_path.strip()
+                        file_content = file_content.strip()
+                        
+                        # Check if this file is one we're trying to fix
+                        if file_path in config_files or any(file_path.endswith(cf.split('/')[-1]) for cf in config_files.keys()):
+                            corrected_files[file_path] = file_content
+                            print(f"[LocalRepo] ✅ LLM provided correction for {file_path}")
+                    
+                    if corrected_files:
+                        break  # Found files with this pattern, stop trying others
+                
+                if corrected_files:
+                    return corrected_files
+                else:
+                    print(f"[LocalRepo] ❌ Could not extract corrected files from LLM response")
+                    return None
+                    
+    except Exception as e:
+        print(f"[LocalRepo] ❌ Error during LLM Spring Boot error correction: {e}")
+        return None
 
 def update_external_dependency_store(file_path: str, external_deps: Set[str]):
     """Update the global external dependency store with dependencies from a file"""
@@ -489,6 +953,10 @@ def parse_file_dependencies(file_path: str, file_content: str, pr_files: Set[str
             # Python files
             dependencies.update(parse_python_dependencies(file_content, file_dir, pr_files))
         
+        elif file_ext in ['java']:
+            # Java files
+            dependencies.update(parse_java_dependencies(file_content, file_dir, pr_files))
+        
         elif file_ext in ['css', 'scss', 'sass', 'less']:
             # CSS files (imports other CSS files)
             dependencies.update(parse_css_dependencies(file_content, file_dir, pr_files))
@@ -496,6 +964,11 @@ def parse_file_dependencies(file_path: str, file_content: str, pr_files: Set[str
         elif file_ext in ['json'] and file_path.endswith('package.json'):
             # Special case: package.json files don't have local dependencies
             print(f"[Step3] 📦 package.json detected - no local dependencies to parse")
+            return set()  # Empty set - handled separately with dependency summary
+        
+        elif file_ext in ['xml'] and file_path.endswith('pom.xml'):
+            # Special case: pom.xml files don't have local dependencies
+            print(f"[Step3] 📦 pom.xml detected - no local dependencies to parse")
             return set()  # Empty set - handled separately with dependency summary
         
         elif file_ext in ['html', 'htm']:
@@ -888,6 +1361,12 @@ def compose_prompt(requirements: str, code: str, file_name: str, context: str) -
     # Check if this is a package.json file for special dependency handling
     is_package_json = file_name.endswith('package.json')
     
+    # Check if this is a pom.xml file for special Maven dependency handling
+    is_pom_xml = file_name.endswith('pom.xml')
+    
+    # Check if this is a Java file for Spring Boot handling
+    is_java_file = file_extension == 'java'
+    
     base_prompt = (
         f"You are an expert AI code reviewer. Your job is to make ONLY ESSENTIAL corrections to the given file `{file_name}` "
         f"to ensure it meets the basic requirements and is free of errors. DO NOT over-engineer or modernize unnecessarily.\n\n"
@@ -920,6 +1399,50 @@ def compose_prompt(requirements: str, code: str, file_name: str, context: str) -
             f"3. **ONLY ANALYZE THE CONTEXT FILES** to see what's actually imported\n"
             f"4. **BE EXTREMELY CONSERVATIVE** - when in doubt, leave it unchanged\n\n"
             f"🚨 CRITICAL: Only make changes that fix actual problems, not 'improvements'\n"
+        )
+    elif is_pom_xml:
+        dependency_instructions = (
+            f"\n---\n🔍 CONSERVATIVE POM.XML ANALYSIS:\n"
+            f"This is a pom.xml file. Make ONLY essential Maven dependency corrections:\n\n"
+            f"1. **ONLY FIX CRITICAL ISSUES:**\n"
+            f"   - Remove dependencies that are clearly unused (not imported anywhere)\n"
+            f"   - Add dependencies that are imported but missing\n"
+            f"   - Fix obvious version conflicts or syntax errors\n"
+            f"   - Ensure dependencies are in the correct scope (compile, test, provided)\n\n"
+            f"2. **DO NOT MAKE THESE CHANGES:**\n"
+            f"   - Do NOT update versions unless there are compatibility issues\n"
+            f"   - Do NOT add new dependencies for 'improvements'\n"
+            f"   - Do NOT remove dependencies unless you're 100% sure they're unused\n"
+            f"   - Do NOT reorganize or reformat unless there are errors\n\n"
+            f"3. **ONLY ANALYZE THE CONTEXT FILES** to see what's actually imported\n"
+            f"4. **BE EXTREMELY CONSERVATIVE** - when in doubt, leave it unchanged\n\n"
+            f"🚨 CRITICAL: Only make changes that fix actual problems, not 'improvements'\n"
+        )
+    elif is_java_file:
+        dependency_instructions = (
+            f"\n---\n📦 CONSERVATIVE JAVA/SPRING BOOT HANDLING:\n"
+            f"For Java import statements and Spring Boot configurations:\n"
+            f"1. **ONLY FIX ACTUAL ERRORS:**\n"
+            f"   - Fix syntax errors in imports\n"
+            f"   - Remove unused imports that cause warnings\n"
+            f"   - Add missing imports for undefined classes\n"
+            f"   - Fix incorrect package declarations\n"
+            f"   - Fix Spring Boot annotations and configurations\n\n"
+            f"2. **DO NOT MAKE THESE CHANGES:**\n"
+            f"   - Do NOT change import styles unless there are errors\n"
+            f"   - Do NOT add new imports for 'improvements'\n"
+            f"   - Do NOT restructure imports unless necessary\n"
+            f"   - Do NOT update to 'modern' patterns\n\n"
+            f"🚫 PREVENT BUILD ERRORS (ESSENTIAL FIXES ONLY):\n"
+            f"1. **Remove unused imports** that will cause build warnings\n"
+            f"2. **Add missing imports** for undefined classes/interfaces\n"
+            f"3. **Fix Spring Boot annotations** (missing @Component, @Service, etc.)\n"
+            f"4. **Correct package declarations** if they're wrong\n"
+            f"5. **Fix application.properties** syntax and configuration errors\n\n"
+            f"📦 DEPENDENCY PHILOSOPHY: If it's not broken, don't fix it\n"
+            f"- Be EXTREMELY CONSERVATIVE with any changes\n"
+            f"- Only fix actual errors, not 'improvements'\n"
+            f"- Do NOT suggest adding dependencies unless absolutely necessary\n"
         )
     else:
         dependency_instructions = (
@@ -2589,6 +3112,347 @@ def run_npm_install_with_error_correction(package_dir_path, package_file, repo_p
     
     return False
 
+def run_maven_clean_install_with_error_correction(maven_dir_path, pom_file, repo_path, regenerated_files, pr_info):
+    """
+    Run mvn clean install with intelligent error correction using LLM in a loop.
+    Keeps trying until success or max retries reached.
+    Returns True if successful, False otherwise.
+    """
+    MAX_CORRECTION_ATTEMPTS = 10  # Maximum number of LLM correction attempts
+    
+    def attempt_maven_clean_install():
+        """Helper function to attempt mvn clean install"""
+        try:
+            result = subprocess.run(
+                ["mvn", "clean", "install", "-DskipTests"],
+                cwd=maven_dir_path,
+                capture_output=True,
+                text=True,
+                timeout=600  # 10 minute timeout
+            )
+            return result
+        except subprocess.TimeoutExpired:
+            print(f"[LocalRepo] ❌ mvn clean install timed out after 10 minutes in {maven_dir_path}")
+            return None
+        except FileNotFoundError:
+            print("[LocalRepo] ❌ mvn not found. Please ensure Maven is installed and in PATH.")
+            return None
+        except Exception as e:
+            print(f"[LocalRepo] ❌ Error during mvn clean install in {maven_dir_path}: {e}")
+            return None
+
+    # Initial attempt
+    print(f"[LocalRepo] 🔨 Attempting mvn clean install in {maven_dir_path}")
+    result = attempt_maven_clean_install()
+    
+    if result is None:
+        return False
+    
+    if result.returncode == 0:
+        print(f"[LocalRepo] ✅ mvn clean install completed successfully in {maven_dir_path}")
+        return True
+    
+    # Start the correction loop
+    print(f"[LocalRepo] 🔄 Starting LLM error correction loop for Maven (max {MAX_CORRECTION_ATTEMPTS} attempts)...")
+    
+    original_pom_xml = None
+    correction_history = []  # Track all corrections applied
+    
+    for attempt in range(1, MAX_CORRECTION_ATTEMPTS + 1):
+        print(f"[LocalRepo] 🤖 Maven LLM Correction Attempt {attempt}/{MAX_CORRECTION_ATTEMPTS}")
+        
+        # Check if result is valid before accessing attributes
+        if result is None:
+            print(f"[LocalRepo] ❌ mvn clean install attempt returned None (timeout/error)")
+            break
+            
+        print(f"[LocalRepo] ❌ mvn clean install failed with return code {result.returncode}")
+        print(f"[LocalRepo] 📄 Error output:")
+        print(f"[LocalRepo] stdout: {result.stdout}")
+        print(f"[LocalRepo] stderr: {result.stderr}")
+        
+        # Get current pom.xml content
+        pom_xml_path = os.path.join(maven_dir_path, "pom.xml")
+        try:
+            with open(pom_xml_path, "r", encoding="utf-8") as f:
+                current_pom_xml = f.read()
+                
+            # Store original on first correction attempt
+            if original_pom_xml is None:
+                original_pom_xml = current_pom_xml
+                
+        except Exception as e:
+            print(f"[LocalRepo] ❌ Could not read pom.xml for error correction: {e}")
+            return False
+        
+        # Combine error output for LLM analysis
+        full_error = f"STDOUT:\n{result.stdout}\n\nSTDERR:\n{result.stderr}"
+        
+        # Enhanced prompt with attempt context
+        correction_context = ""
+        if correction_history:
+            correction_context = f"\n\nPREVIOUS CORRECTIONS APPLIED:\n" + "\n".join([f"Attempt {i+1}: {corr}" for i, corr in enumerate(correction_history)])
+        
+        print(f"[LocalRepo] 🤖 Sending Maven error to LLM for analysis...")
+        
+        # Always use web search for error correction
+        try:
+            corrected_pom_xml = asyncio.run(
+                fix_maven_errors_with_web_search(
+                    current_pom_xml, 
+                    full_error + correction_context, 
+                    pom_file, 
+                    pr_info
+                )
+            )
+        except Exception as e:
+            print(f"[LocalRepo] ❌ Error running LLM Maven correction: {e}")
+            continue  # Try next iteration
+        
+        if not corrected_pom_xml:
+            print(f"[LocalRepo] ❌ LLM could not provide a valid Maven correction for attempt {attempt}")
+            continue  # Try next iteration
+        
+        # Check if LLM made any actual changes
+        if corrected_pom_xml.strip() == current_pom_xml.strip():
+            print(f"[LocalRepo] ⚠️ LLM returned same pom.xml (no changes) - may be stuck")
+            continue  # Try next iteration
+        
+        # Write corrected pom.xml back to file
+        try:
+            with open(pom_xml_path, "w", encoding="utf-8") as f:
+                f.write(corrected_pom_xml)
+            print(f"[LocalRepo] ✅ Applied LLM Maven correction attempt {attempt}")
+            
+            # Track this correction
+            correction_history.append(f"Fixed Maven dependency/configuration issues")
+            
+        except Exception as e:
+            print(f"[LocalRepo] ❌ Error writing corrected pom.xml: {e}")
+            continue  # Try next iteration
+        
+        # Retry mvn clean install with corrected pom.xml
+        print(f"[LocalRepo] 🔄 Retrying mvn clean install with LLM correction {attempt}...")
+        result = attempt_maven_clean_install()
+        
+        if result is None:
+            continue  # Try next iteration
+        
+        if result.returncode == 0:
+            print(f"[LocalRepo] 🎉 mvn clean install succeeded after {attempt} LLM correction(s)!")
+            
+            # Update regenerated_files with the final corrected version
+            correction_summary = f"LLM-corrected pom.xml after {attempt} iteration(s) to fix Maven build failures"
+            regenerated_files[pom_file] = {
+                "old_code": original_pom_xml or current_pom_xml,
+                "changes": correction_summary,
+                "updated_code": corrected_pom_xml
+            }
+            
+            return True
+        
+        # If we get here, this correction didn't work, continue to next attempt
+        print(f"[LocalRepo] ⚠️ mvn clean install still failed after correction {attempt}, trying next iteration...")
+    
+    # All correction attempts exhausted
+    print(f"[LocalRepo] ❌ mvn clean install failed after {MAX_CORRECTION_ATTEMPTS} LLM correction attempts")
+    if result is not None:
+        print(f"[LocalRepo] 📄 Final error output:")
+        print(f"[LocalRepo] stdout: {result.stdout}")
+        print(f"[LocalRepo] stderr: {result.stderr}")
+    else:
+        print(f"[LocalRepo] 📄 Final attempt resulted in timeout/error (no output available)")
+    
+    # Store the final attempted correction even if it failed
+    if original_pom_xml and correction_history:
+        with open(os.path.join(maven_dir_path, "pom.xml"), "r", encoding="utf-8") as f:
+            final_pom_xml = f.read()
+        
+        correction_summary = f"LLM attempted {len(correction_history)} correction(s) but mvn clean install still failed"
+        regenerated_files[pom_file] = {
+            "old_code": original_pom_xml,
+            "changes": correction_summary,
+            "updated_code": final_pom_xml
+        }
+    
+    return False
+
+def run_springboot_server_with_error_correction(maven_dir_path, pom_file, repo_path, regenerated_files, pr_info):
+    """
+    Run Spring Boot server with intelligent error correction using LLM in a loop.
+    Keeps trying until success or max retries reached.
+    Returns True if successful, False otherwise.
+    """
+    MAX_CORRECTION_ATTEMPTS = 10  # Maximum number of LLM correction attempts
+    
+    def attempt_springboot_run():
+        """Helper function to attempt Spring Boot server start"""
+        try:
+            # Start Spring Boot server in background
+            result = subprocess.run(
+                ["mvn", "spring-boot:run"],
+                cwd=maven_dir_path,
+                capture_output=True,
+                text=True,
+                timeout=60  # 1 minute timeout to check if server starts
+            )
+            return result
+        except subprocess.TimeoutExpired:
+            print(f"[LocalRepo] ⏱️ Spring Boot server start timed out after 1 minute (this might be normal if server started)")
+            # Check if server is actually running on common ports
+            import socket
+            common_ports = [8080, 8081, 8082, 9090]
+            for port in common_ports:
+                try:
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    sock.settimeout(1)
+                    result = sock.connect_ex(('localhost', port))
+                    sock.close()
+                    if result == 0:
+                        print(f"[LocalRepo] ✅ Spring Boot server appears to be running on port {port}")
+                        # Create a mock result object with proper attributes
+                        class MockResult:
+                            def __init__(self):
+                                self.returncode = 0
+                                self.stdout = f'Server running on port {port}'
+                                self.stderr = ''
+                        return MockResult()
+                except:
+                    continue
+            return None
+        except FileNotFoundError:
+            print("[LocalRepo] ❌ mvn not found. Please ensure Maven is installed and in PATH.")
+            return None
+        except Exception as e:
+            print(f"[LocalRepo] ❌ Error during Spring Boot server start in {maven_dir_path}: {e}")
+            return None
+
+    # Initial attempt
+    print(f"[LocalRepo] 🚀 Attempting to start Spring Boot server in {maven_dir_path}")
+    result = attempt_springboot_run()
+    
+    if result is None:
+        return False
+    
+    if result.returncode == 0:
+        print(f"[LocalRepo] ✅ Spring Boot server started successfully in {maven_dir_path}")
+        return True
+    
+    # Start the correction loop
+    print(f"[LocalRepo] 🔄 Starting LLM error correction loop for Spring Boot (max {MAX_CORRECTION_ATTEMPTS} attempts)...")
+    
+    original_files = {}
+    correction_history = []  # Track all corrections applied
+    
+    for attempt in range(1, MAX_CORRECTION_ATTEMPTS + 1):
+        print(f"[LocalRepo] 🤖 Spring Boot LLM Correction Attempt {attempt}/{MAX_CORRECTION_ATTEMPTS}")
+        
+        # Check if result is valid before accessing attributes
+        if result is None:
+            print(f"[LocalRepo] ❌ Spring Boot server start attempt returned None (timeout/error)")
+            break
+            
+        print(f"[LocalRepo] ❌ Spring Boot server failed to start with return code {result.returncode}")
+        print(f"[LocalRepo] 📄 Error output:")
+        print(f"[LocalRepo] stdout: {result.stdout}")
+        print(f"[LocalRepo] stderr: {result.stderr}")
+        
+        # Combine error output for LLM analysis
+        full_error = f"STDOUT:\n{result.stdout}\n\nSTDERR:\n{result.stderr}"
+        
+        # Enhanced prompt with attempt context
+        correction_context = ""
+        if correction_history:
+            correction_context = f"\n\nPREVIOUS CORRECTIONS APPLIED:\n" + "\n".join([f"Attempt {i+1}: {corr}" for i, corr in enumerate(correction_history)])
+        
+        print(f"[LocalRepo] 🤖 Sending Spring Boot error to LLM for analysis...")
+        
+        # Always use web search for error correction
+        try:
+            corrected_files = asyncio.run(
+                fix_springboot_errors_with_web_search(
+                    full_error + correction_context,
+                    maven_dir_path,
+                    pr_info
+                )
+            )
+        except Exception as e:
+            print(f"[LocalRepo] ❌ Error running LLM Spring Boot correction: {e}")
+            continue  # Try next iteration
+        
+        if not corrected_files:
+            print(f"[LocalRepo] ❌ LLM could not provide valid Spring Boot corrections for attempt {attempt}")
+            continue  # Try next iteration
+        
+        # Apply corrections to files
+        files_changed = 0
+        for file_path, corrected_content in corrected_files.items():
+            full_file_path = os.path.join(maven_dir_path, file_path)
+            try:
+                # Read current content to check if LLM made changes
+                with open(full_file_path, "r", encoding="utf-8") as f:
+                    current_content = f.read()
+                
+                # Store original on first correction attempt
+                if file_path not in original_files:
+                    original_files[file_path] = current_content
+                
+                if corrected_content.strip() == current_content.strip():
+                    print(f"[LocalRepo] ⚠️ LLM returned same content for {file_path} (no changes)")
+                    continue
+                
+                # Write corrected content
+                with open(full_file_path, "w", encoding="utf-8") as f:
+                    f.write(corrected_content)
+                
+                # Update regenerated_files with the correction
+                maven_dir = os.path.dirname(pom_file) if os.path.dirname(pom_file) else "."
+                relative_file_path = os.path.join(maven_dir, file_path) if maven_dir != "." else file_path
+                regenerated_files[relative_file_path] = {
+                    "old_code": current_content,
+                    "changes": f"LLM-corrected Spring Boot configuration/code (attempt {attempt})",
+                    "updated_code": corrected_content
+                }
+                
+                files_changed += 1
+                print(f"[LocalRepo] ✅ Applied LLM Spring Boot correction to {file_path}")
+                
+            except Exception as e:
+                print(f"[LocalRepo] ❌ Error writing corrected Spring Boot file {file_path}: {e}")
+                continue
+        
+        if files_changed == 0:
+            print(f"[LocalRepo] ⚠️ No files were actually changed in Spring Boot attempt {attempt}")
+            continue
+        
+        # Track this correction
+        correction_history.append(f"Fixed {files_changed} Spring Boot configuration/code files")
+        
+        # Retry Spring Boot server start with corrected files
+        print(f"[LocalRepo] 🔄 Retrying Spring Boot server start with LLM corrections {attempt}...")
+        result = attempt_springboot_run()
+        
+        if result is None:
+            continue  # Try next iteration
+        
+        if result.returncode == 0:
+            print(f"[LocalRepo] 🎉 Spring Boot server started successfully after {attempt} LLM correction(s)!")
+            return True
+        
+        # If we get here, this correction didn't work, continue to next attempt
+        print(f"[LocalRepo] ⚠️ Spring Boot server still failed to start after correction {attempt}, trying next iteration...")
+    
+    # All correction attempts exhausted
+    print(f"[LocalRepo] ❌ Spring Boot server failed to start after {MAX_CORRECTION_ATTEMPTS} LLM correction attempts")
+    if result is not None:
+        print(f"[LocalRepo] 📄 Final error output:")
+        print(f"[LocalRepo] stdout: {result.stdout}")
+        print(f"[LocalRepo] stderr: {result.stderr}")
+    else:
+        print(f"[LocalRepo] 📄 Final attempt resulted in timeout/error (no output available)")
+    
+    return False
+
 def run_npm_build_with_error_correction(repo_path, package_json_files, regenerated_files, pr_info):
     """
     Run npm build with intelligent error correction using LLM in a loop.
@@ -3180,9 +4044,16 @@ def process_pr_with_local_repo(pr_info, regenerated_files):
             
             print(f"[LocalRepo] ✓ Applied LLM changes to {file_path}")
         
-        # Generate lockfile if any package.json was changed (check for files ending with package.json)
+        # Detect project structure to determine build systems
+        project_structure = detect_project_structure(repo_path)
+        print(f"[LocalRepo] 🎯 Detected project type: {project_structure['project_type']}")
+        
+        # Separate npm and Maven files
         package_json_files_list = [f for f in regenerated_files.keys() if f.endswith("package.json")]
         package_json_files_dict = {f: regenerated_files[f] for f in package_json_files_list}
+        
+        pom_xml_files_list = [f for f in regenerated_files.keys() if f.endswith("pom.xml")]
+        pom_xml_files_dict = {f: regenerated_files[f] for f in pom_xml_files_list}
         
         if package_json_files_list:
             print(f"[LocalRepo] package.json files detected: {package_json_files_list}")
@@ -3201,7 +4072,91 @@ def process_pr_with_local_repo(pr_info, regenerated_files):
                 )
         
         # Run npm build with error correction after all dependencies are resolved
-        build_status = run_npm_build_with_error_correction(repo_path, package_json_files_dict, regenerated_files, pr_info)
+        npm_build_status = run_npm_build_with_error_correction(repo_path, package_json_files_dict, regenerated_files, pr_info)
+        
+        # Process Maven pom.xml files if any exist
+        maven_build_status = "NO MAVEN FILES"
+        springboot_server_status = "NO SPRING BOOT"
+        
+        if pom_xml_files_list:
+            print(f"[LocalRepo] 🔨 Maven pom.xml files detected: {pom_xml_files_list}")
+            
+            maven_build_results = []
+            springboot_server_results = []
+            
+            # Process each pom.xml file
+            for pom_file in pom_xml_files_list:
+                # Get the directory containing the pom.xml
+                maven_dir = os.path.dirname(pom_file) if os.path.dirname(pom_file) else "."
+                maven_dir_path = os.path.join(repo_path, maven_dir)
+                
+                print(f"[LocalRepo] 🔨 Running mvn clean install in directory: {maven_dir_path}")
+                
+                # Try mvn clean install with intelligent error correction
+                maven_success = run_maven_clean_install_with_error_correction(
+                    maven_dir_path, pom_file, repo_path, regenerated_files, pr_info
+                )
+                
+                if maven_success:
+                    maven_build_results.append(f"{pom_file}: SUCCESS")
+                    
+                    # Try to start Spring Boot server if Maven build succeeded
+                    if project_structure['project_type'] in ['springboot_only', 'fullstack']:
+                        print(f"[LocalRepo] 🚀 Attempting to start Spring Boot server in: {maven_dir_path}")
+                        
+                        springboot_success = run_springboot_server_with_error_correction(
+                            maven_dir_path, pom_file, repo_path, regenerated_files, pr_info
+                        )
+                        
+                        if springboot_success:
+                            springboot_server_results.append(f"{pom_file}: SERVER STARTED")
+                        else:
+                            springboot_server_results.append(f"{pom_file}: SERVER FAILED")
+                    else:
+                        springboot_server_results.append(f"{pom_file}: NOT SPRING BOOT")
+                else:
+                    maven_build_results.append(f"{pom_file}: FAILED")
+                    springboot_server_results.append(f"{pom_file}: MAVEN BUILD FAILED")
+            
+            # Determine Maven build status
+            if not maven_build_results:
+                maven_build_status = "NO MAVEN BUILDS RUN"
+            elif all("SUCCESS" in result for result in maven_build_results):
+                maven_build_status = "ALL MAVEN BUILDS SUCCESSFUL"
+            elif any("SUCCESS" in result for result in maven_build_results):
+                maven_build_status = "PARTIAL MAVEN SUCCESS"
+            else:
+                maven_build_status = "ALL MAVEN BUILDS FAILED"
+            
+            # Determine Spring Boot server status
+            if not springboot_server_results:
+                springboot_server_status = "NO SPRING BOOT SERVERS"
+            elif all("SERVER STARTED" in result for result in springboot_server_results):
+                springboot_server_status = "ALL SERVERS STARTED"
+            elif any("SERVER STARTED" in result for result in springboot_server_results):
+                springboot_server_status = "PARTIAL SERVER SUCCESS"
+            else:
+                springboot_server_status = "ALL SERVERS FAILED"
+            
+            print(f"[LocalRepo] 🔨 Maven build summary:")
+            for result in maven_build_results:
+                print(f"[LocalRepo]   - {result}")
+            print(f"[LocalRepo] 🔨 Maven build status: {maven_build_status}")
+            
+            print(f"[LocalRepo] 🚀 Spring Boot server summary:")
+            for result in springboot_server_results:
+                print(f"[LocalRepo]   - {result}")
+            print(f"[LocalRepo] 🚀 Spring Boot server status: {springboot_server_status}")
+        
+        # Determine overall build status
+        if project_structure['project_type'] == 'react_only':
+            build_status = npm_build_status
+        elif project_structure['project_type'] == 'springboot_only':
+            build_status = f"Maven: {maven_build_status}, Spring Boot: {springboot_server_status}"
+        elif project_structure['project_type'] == 'fullstack':
+            build_status = f"npm: {npm_build_status}, Maven: {maven_build_status}, Spring Boot: {springboot_server_status}"
+        else:
+            build_status = f"npm: {npm_build_status}, Maven: {maven_build_status}"
         
         # TODO: Future user story - Generate and run tests here
         # print("[LocalRepo] Preparing for test generation and execution...")
@@ -3213,21 +4168,40 @@ def process_pr_with_local_repo(pr_info, regenerated_files):
         # run_selenium_tests(repo_path)
         # run_cucumber_tests(repo_path)
         
-        print(f"[LocalRepo] ✅ Local processing completed with intelligent error correction!")
+        print(f"[LocalRepo] ✅ Full-stack processing completed with intelligent error correction!")
         print(f"[LocalRepo] 📊 Final summary:")
+        print(f"[LocalRepo]   - Project type: {project_structure['project_type']}")
         print(f"[LocalRepo]   - Total files: {len(regenerated_files)}")
         print(f"[LocalRepo]   - Package.json files processed: {len(package_json_files_list)}")
+        print(f"[LocalRepo]   - Maven pom.xml files processed: {len(pom_xml_files_list)}")
         
         # Count LLM corrections with more detail
         llm_corrected_files = [f for f in regenerated_files.values() if 'LLM-corrected' in f.get('changes', '') or 'LLM attempted' in f.get('changes', '')]
-        successful_corrections = [f for f in llm_corrected_files if 'npm install still failed' not in f.get('changes', '')]
-        failed_corrections = [f for f in llm_corrected_files if 'npm install still failed' in f.get('changes', '')]
+        successful_corrections = [f for f in llm_corrected_files if 'still failed' not in f.get('changes', '')]
+        failed_corrections = [f for f in llm_corrected_files if 'still failed' in f.get('changes', '')]
         
         print(f"[LocalRepo]   - LLM successful corrections: {len(successful_corrections)}")
         if failed_corrections:
-            print(f"[LocalRepo]   - LLM failed corrections: {len(failed_corrections)} (npm install still failed after multiple attempts)")
-        print(f"[LocalRepo]   - Build status: {build_status}")
+            print(f"[LocalRepo]   - LLM failed corrections: {len(failed_corrections)} (builds still failed after multiple attempts)")
+        print(f"[LocalRepo]   - Overall build status: {build_status}")
         print(f"[LocalRepo] ✓ Workspace preserved at: {workspace_dir}")
+        
+        # Add build status to regenerated_files metadata (for PR description)
+        build_summary = {
+            "project_type": project_structure['project_type'],
+            "npm_build_status": npm_build_status if package_json_files_list else "NO NPM FILES",
+            "maven_build_status": maven_build_status,
+            "springboot_server_status": springboot_server_status,
+            "overall_status": build_status,
+            "timestamp": "fullstack_processing_completed"
+        }
+        
+        # Store build info in a special metadata entry
+        regenerated_files["_fullstack_build_metadata"] = {
+            "old_code": "",
+            "changes": f"Full-stack build validation: {build_status}",
+            "updated_code": json.dumps(build_summary, indent=2)
+        }
         
     except Exception as e:
         print(f"[LocalRepo] ❌ Error during local repo processing: {e}")
@@ -3605,3 +4579,269 @@ Please provide the corrected files with proper imports, exports, and syntax."""
         print(f"[LocalRepo] ❌ Error during web search build error correction: {e}")
         print("[LocalRepo] 🔄 Falling back to regular LLM correction...")
         return await fix_build_errors_with_llm(build_error, affected_files, package_dir_path, pr_info)
+
+def detect_project_structure(repo_path: str) -> dict:
+    """
+    Detect the structure of a project to identify frontend/backend directories
+    and build systems used.
+    
+    Returns:
+        dict: {
+            'project_type': 'react_only' | 'springboot_only' | 'fullstack',
+            'frontend_dirs': [list of frontend directories],
+            'backend_dirs': [list of backend directories],
+            'build_systems': {
+                'npm': [list of package.json paths],
+                'maven': [list of pom.xml paths],
+                'gradle': [list of build.gradle paths]
+            }
+        }
+    """
+    if repo_path in PROJECT_STRUCTURE_CACHE:
+        return PROJECT_STRUCTURE_CACHE[repo_path]
+    
+    print(f"[ProjectDetection] 🔍 Analyzing project structure in {repo_path}")
+    
+    structure = {
+        'project_type': 'unknown',
+        'frontend_dirs': [],
+        'backend_dirs': [],
+        'build_systems': {
+            'npm': [],
+            'maven': [],
+            'gradle': []
+        }
+    }
+    
+    # Walk through the repository to find build files
+    try:
+        for root, dirs, files in os.walk(repo_path):
+            # Skip node_modules, .git, and other common ignore directories
+            dirs[:] = [d for d in dirs if d not in ['.git', 'node_modules', '.mvn', 'target', 'build', 'dist']]
+            
+            rel_root = os.path.relpath(root, repo_path)
+            if rel_root == '.':
+                rel_root = ''
+            
+            # Check for build system files
+            if 'package.json' in files:
+                package_path = os.path.join(rel_root, 'package.json') if rel_root else 'package.json'
+                structure['build_systems']['npm'].append(package_path)
+                
+                # Analyze package.json to determine if it's frontend
+                try:
+                    with open(os.path.join(root, 'package.json'), 'r', encoding='utf-8') as f:
+                        package_data = json.loads(f.read())
+                        
+                    # Check for React/frontend indicators
+                    dependencies = {**package_data.get('dependencies', {}), **package_data.get('devDependencies', {})}
+                    frontend_indicators = ['react', 'vue', 'angular', '@angular', 'next', 'nuxt', 'vite', 'webpack']
+                    
+                    if any(indicator in dep for dep in dependencies.keys() for indicator in frontend_indicators):
+                        structure['frontend_dirs'].append(rel_root if rel_root else '.')
+                        print(f"[ProjectDetection] 📱 Frontend detected in: {rel_root or '.'}")
+                        
+                except Exception as e:
+                    print(f"[ProjectDetection] ⚠️ Error reading package.json in {root}: {e}")
+            
+            if 'pom.xml' in files:
+                pom_path = os.path.join(rel_root, 'pom.xml') if rel_root else 'pom.xml'
+                structure['build_systems']['maven'].append(pom_path)
+                
+                # Analyze pom.xml to determine if it's Spring Boot backend
+                try:
+                    with open(os.path.join(root, 'pom.xml'), 'r', encoding='utf-8') as f:
+                        pom_content = f.read()
+                        
+                    # Check for Spring Boot indicators
+                    springboot_indicators = ['spring-boot', 'springframework', 'spring-web', 'spring-data']
+                    
+                    if any(indicator in pom_content for indicator in springboot_indicators):
+                        structure['backend_dirs'].append(rel_root if rel_root else '.')
+                        print(f"[ProjectDetection] 🚀 Spring Boot backend detected in: {rel_root or '.'}")
+                        
+                except Exception as e:
+                    print(f"[ProjectDetection] ⚠️ Error reading pom.xml in {root}: {e}")
+            
+            if 'build.gradle' in files or 'build.gradle.kts' in files:
+                gradle_file = 'build.gradle' if 'build.gradle' in files else 'build.gradle.kts'
+                gradle_path = os.path.join(rel_root, gradle_file) if rel_root else gradle_file
+                structure['build_systems']['gradle'].append(gradle_path)
+                
+                # Analyze gradle file for Spring Boot
+                try:
+                    with open(os.path.join(root, gradle_file), 'r', encoding='utf-8') as f:
+                        gradle_content = f.read()
+                        
+                    if 'spring-boot' in gradle_content or 'org.springframework' in gradle_content:
+                        structure['backend_dirs'].append(rel_root if rel_root else '.')
+                        print(f"[ProjectDetection] 🚀 Spring Boot backend detected in: {rel_root or '.'}")
+                        
+                except Exception as e:
+                    print(f"[ProjectDetection] ⚠️ Error reading {gradle_file} in {root}: {e}")
+    
+    except Exception as e:
+        print(f"[ProjectDetection] ❌ Error analyzing project structure: {e}")
+    
+    # Determine project type
+    has_frontend = len(structure['frontend_dirs']) > 0
+    has_backend = len(structure['backend_dirs']) > 0
+    
+    if has_frontend and has_backend:
+        structure['project_type'] = 'fullstack'
+    elif has_frontend:
+        structure['project_type'] = 'react_only'
+    elif has_backend:
+        structure['project_type'] = 'springboot_only'
+    else:
+        structure['project_type'] = 'unknown'
+    
+    print(f"[ProjectDetection] 🎯 Project type: {structure['project_type']}")
+    print(f"[ProjectDetection] 📱 Frontend dirs: {structure['frontend_dirs']}")
+    print(f"[ProjectDetection] 🚀 Backend dirs: {structure['backend_dirs']}")
+    print(f"[ProjectDetection] 🔧 Build systems: npm={len(structure['build_systems']['npm'])}, maven={len(structure['build_systems']['maven'])}, gradle={len(structure['build_systems']['gradle'])}")
+    
+    PROJECT_STRUCTURE_CACHE[repo_path] = structure
+    return structure
+
+def extract_maven_dependencies(pom_content: str) -> Set[str]:
+    """Extract Maven dependencies from pom.xml content"""
+    dependencies = set()
+    
+    try:
+        # Simple regex-based extraction for Maven dependencies
+        # This could be enhanced with proper XML parsing if needed
+        dependency_patterns = [
+            r'<groupId>([^<]+)</groupId>\s*<artifactId>([^<]+)</artifactId>',
+            r'<dependency>[\s\S]*?<groupId>([^<]+)</groupId>[\s\S]*?<artifactId>([^<]+)</artifactId>',
+        ]
+        
+        for pattern in dependency_patterns:
+            matches = re.findall(pattern, pom_content, re.IGNORECASE)
+            for match in matches:
+                if len(match) == 2:
+                    group_id, artifact_id = match
+                    dependency_name = f"{group_id}:{artifact_id}"
+                    dependencies.add(dependency_name)
+        
+        # Also extract Spring Boot starters and common dependencies
+        spring_patterns = [
+            r'spring-boot-starter-([a-zA-Z0-9\-]+)',
+            r'springframework\.([a-zA-Z0-9\-]+)',
+        ]
+        
+        for pattern in spring_patterns:
+            matches = re.findall(pattern, pom_content, re.IGNORECASE)
+            for match in matches:
+                dependencies.add(f"spring-boot-starter-{match}")
+    
+    except Exception as e:
+        print(f"[Maven] ⚠️ Error extracting Maven dependencies: {e}")
+    
+    return dependencies
+
+def parse_java_dependencies(content: str, file_dir: str, pr_files: Set[str]) -> Set[str]:
+    """Parse Java import statements to find local file dependencies"""
+    dependencies = set()
+    
+    try:
+        # Java import patterns
+        import_patterns = [
+            r'import\s+([a-zA-Z0-9_.]+);',
+            r'import\s+static\s+([a-zA-Z0-9_.]+);',
+        ]
+        
+        for pattern in import_patterns:
+            matches = re.findall(pattern, content, re.MULTILINE)
+            for match in matches:
+                # Skip standard Java packages
+                if match.startswith(('java.', 'javax.', 'org.springframework.', 'org.junit.')):
+                    continue
+                
+                # Try to resolve to local files
+                resolved_path = resolve_java_import_path(match, file_dir, pr_files)
+                if resolved_path:
+                    dependencies.add(resolved_path)
+    
+    except Exception as e:
+        print(f"[Java] ⚠️ Error parsing Java dependencies: {e}")
+    
+    return dependencies
+
+def resolve_java_import_path(import_path: str, base_dir: str, pr_files: Set[str]) -> Optional[str]:
+    """
+    Resolve Java import path to actual file in PR.
+    
+    Args:
+        import_path: Java import like 'com.example.service.UserService'
+        base_dir: Directory of the importing file
+        pr_files: Set of all files in PR
+    
+    Returns:
+        Resolved file path if found, None otherwise
+    """
+    try:
+        # Convert Java package path to file path
+        # com.example.service.UserService -> src/main/java/com/example/service/UserService.java
+        path_parts = import_path.split('.')
+        
+        # Common Java source directories
+        java_source_dirs = [
+            'src/main/java',
+            'src/test/java',
+            'src/java',
+            'java',
+        ]
+        
+        for source_dir in java_source_dirs:
+            # Try to construct the file path
+            file_path = os.path.join(source_dir, *path_parts) + '.java'
+            
+            # Normalize path separators
+            file_path = file_path.replace('\\', '/')
+            
+            if file_path in pr_files:
+                return file_path
+        
+        # Also try relative to current directory
+        relative_path = os.path.join(base_dir, *path_parts) + '.java'
+        relative_path = relative_path.replace('\\', '/')
+        
+        if relative_path in pr_files:
+            return relative_path
+    
+    except Exception as e:
+        print(f"[Java] ⚠️ Error resolving Java import {import_path}: {e}")
+    
+    return None
+
+def extract_java_external_dependencies(content: str) -> Set[str]:
+    """Extract external dependencies from Java import statements"""
+    external_deps = set()
+    
+    try:
+        # Java import patterns
+        import_patterns = [
+            r'import\s+([a-zA-Z0-9_.]+);',
+            r'import\s+static\s+([a-zA-Z0-9_.]+);',
+        ]
+        
+        for pattern in import_patterns:
+            matches = re.findall(pattern, content, re.MULTILINE)
+            for match in matches:
+                # Extract root package name for external dependencies
+                if '.' in match:
+                    root_package = match.split('.')[0]
+                    
+                    # Skip standard Java packages but include third-party
+                    if root_package not in ['java', 'javax'] and not match.startswith('com.yourcompany'):
+                        # Extract meaningful package identifier
+                        package_parts = match.split('.')
+                        if len(package_parts) >= 2:
+                            package_name = f"{package_parts[0]}.{package_parts[1]}"
+                            external_deps.add(package_name)
+    
+    except Exception as e:
+        print(f"[Java] ⚠️ Error extracting Java external dependencies: {e}")
+    
+    return external_deps
