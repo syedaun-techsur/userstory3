@@ -3277,182 +3277,6 @@ def run_maven_clean_install_with_error_correction(maven_dir_path, pom_file, repo
     
     return False
 
-def run_springboot_server_with_error_correction(maven_dir_path, pom_file, repo_path, regenerated_files, pr_info):
-    """
-    Run Spring Boot server with intelligent error correction using LLM in a loop.
-    Keeps trying until success or max retries reached.
-    Returns True if successful, False otherwise.
-    """
-    MAX_CORRECTION_ATTEMPTS = 10  # Maximum number of LLM correction attempts
-    
-    def attempt_springboot_run():
-        """Helper function to attempt Spring Boot server start"""
-        try:
-            # Start Spring Boot server in background
-            result = subprocess.run(
-                ["mvn", "spring-boot:run"],
-                cwd=maven_dir_path,
-                capture_output=True,
-                text=True,
-                timeout=60  # 1 minute timeout to check if server starts
-            )
-            return result
-        except subprocess.TimeoutExpired:
-            print(f"[LocalRepo] ⏱️ Spring Boot server start timed out after 1 minute (this might be normal if server started)")
-            # Check if server is actually running on common ports
-            import socket
-            common_ports = [8080, 8081, 8082, 9090]
-            for port in common_ports:
-                try:
-                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    sock.settimeout(1)
-                    result = sock.connect_ex(('localhost', port))
-                    sock.close()
-                    if result == 0:
-                        print(f"[LocalRepo] ✅ Spring Boot server appears to be running on port {port}")
-                        # Create a mock result object with proper attributes
-                        class MockResult:
-                            def __init__(self):
-                                self.returncode = 0
-                                self.stdout = f'Server running on port {port}'
-                                self.stderr = ''
-                        return MockResult()
-                except:
-                    continue
-            return None
-        except FileNotFoundError:
-            print("[LocalRepo] ❌ mvn not found. Please ensure Maven is installed and in PATH.")
-            return None
-        except Exception as e:
-            print(f"[LocalRepo] ❌ Error during Spring Boot server start in {maven_dir_path}: {e}")
-            return None
-
-    # Initial attempt
-    print(f"[LocalRepo] 🚀 Attempting to start Spring Boot server in {maven_dir_path}")
-    result = attempt_springboot_run()
-    
-    if result is None:
-        return False
-    
-    if result.returncode == 0:
-        print(f"[LocalRepo] ✅ Spring Boot server started successfully in {maven_dir_path}")
-        return True
-    
-    # Start the correction loop
-    print(f"[LocalRepo] 🔄 Starting LLM error correction loop for Spring Boot (max {MAX_CORRECTION_ATTEMPTS} attempts)...")
-    
-    original_files = {}
-    correction_history = []  # Track all corrections applied
-    
-    for attempt in range(1, MAX_CORRECTION_ATTEMPTS + 1):
-        print(f"[LocalRepo] 🤖 Spring Boot LLM Correction Attempt {attempt}/{MAX_CORRECTION_ATTEMPTS}")
-        
-        # Check if result is valid before accessing attributes
-        if result is None:
-            print(f"[LocalRepo] ❌ Spring Boot server start attempt returned None (timeout/error)")
-            break
-            
-        print(f"[LocalRepo] ❌ Spring Boot server failed to start with return code {result.returncode}")
-        print(f"[LocalRepo] 📄 Error output:")
-        print(f"[LocalRepo] stdout: {result.stdout}")
-        print(f"[LocalRepo] stderr: {result.stderr}")
-        
-        # Combine error output for LLM analysis
-        full_error = f"STDOUT:\n{result.stdout}\n\nSTDERR:\n{result.stderr}"
-        
-        # Enhanced prompt with attempt context
-        correction_context = ""
-        if correction_history:
-            correction_context = f"\n\nPREVIOUS CORRECTIONS APPLIED:\n" + "\n".join([f"Attempt {i+1}: {corr}" for i, corr in enumerate(correction_history)])
-        
-        print(f"[LocalRepo] 🤖 Sending Spring Boot error to LLM for analysis...")
-        
-        # Always use web search for error correction
-        try:
-            corrected_files = asyncio.run(
-                fix_springboot_errors_with_web_search(
-                    full_error + correction_context,
-                    maven_dir_path,
-                    pr_info
-                )
-            )
-        except Exception as e:
-            print(f"[LocalRepo] ❌ Error running LLM Spring Boot correction: {e}")
-            continue  # Try next iteration
-        
-        if not corrected_files:
-            print(f"[LocalRepo] ❌ LLM could not provide valid Spring Boot corrections for attempt {attempt}")
-            continue  # Try next iteration
-        
-        # Apply corrections to files
-        files_changed = 0
-        for file_path, corrected_content in corrected_files.items():
-            full_file_path = os.path.join(maven_dir_path, file_path)
-            try:
-                # Read current content to check if LLM made changes
-                with open(full_file_path, "r", encoding="utf-8") as f:
-                    current_content = f.read()
-                
-                # Store original on first correction attempt
-                if file_path not in original_files:
-                    original_files[file_path] = current_content
-                
-                if corrected_content.strip() == current_content.strip():
-                    print(f"[LocalRepo] ⚠️ LLM returned same content for {file_path} (no changes)")
-                    continue
-                
-                # Write corrected content
-                with open(full_file_path, "w", encoding="utf-8") as f:
-                    f.write(corrected_content)
-                
-                # Update regenerated_files with the correction
-                maven_dir = os.path.dirname(pom_file) if os.path.dirname(pom_file) else "."
-                relative_file_path = os.path.join(maven_dir, file_path) if maven_dir != "." else file_path
-                regenerated_files[relative_file_path] = {
-                    "old_code": current_content,
-                    "changes": f"LLM-corrected Spring Boot configuration/code (attempt {attempt})",
-                    "updated_code": corrected_content
-                }
-                
-                files_changed += 1
-                print(f"[LocalRepo] ✅ Applied LLM Spring Boot correction to {file_path}")
-                
-            except Exception as e:
-                print(f"[LocalRepo] ❌ Error writing corrected Spring Boot file {file_path}: {e}")
-                continue
-        
-        if files_changed == 0:
-            print(f"[LocalRepo] ⚠️ No files were actually changed in Spring Boot attempt {attempt}")
-            continue
-        
-        # Track this correction
-        correction_history.append(f"Fixed {files_changed} Spring Boot configuration/code files")
-        
-        # Retry Spring Boot server start with corrected files
-        print(f"[LocalRepo] 🔄 Retrying Spring Boot server start with LLM corrections {attempt}...")
-        result = attempt_springboot_run()
-        
-        if result is None:
-            continue  # Try next iteration
-        
-        if result.returncode == 0:
-            print(f"[LocalRepo] 🎉 Spring Boot server started successfully after {attempt} LLM correction(s)!")
-            return True
-        
-        # If we get here, this correction didn't work, continue to next attempt
-        print(f"[LocalRepo] ⚠️ Spring Boot server still failed to start after correction {attempt}, trying next iteration...")
-    
-    # All correction attempts exhausted
-    print(f"[LocalRepo] ❌ Spring Boot server failed to start after {MAX_CORRECTION_ATTEMPTS} LLM correction attempts")
-    if result is not None:
-        print(f"[LocalRepo] 📄 Final error output:")
-        print(f"[LocalRepo] stdout: {result.stdout}")
-        print(f"[LocalRepo] stderr: {result.stderr}")
-    else:
-        print(f"[LocalRepo] 📄 Final attempt resulted in timeout/error (no output available)")
-    
-    return False
-
 def run_npm_build_with_error_correction(repo_path, package_json_files, regenerated_files, pr_info):
     """
     Run npm build with intelligent error correction using LLM in a loop.
@@ -4076,13 +3900,11 @@ def process_pr_with_local_repo(pr_info, regenerated_files):
         
         # Process Maven pom.xml files if any exist
         maven_build_status = "NO MAVEN FILES"
-        springboot_server_status = "NO SPRING BOOT"
         
         if pom_xml_files_list:
             print(f"[LocalRepo] 🔨 Maven pom.xml files detected: {pom_xml_files_list}")
             
             maven_build_results = []
-            springboot_server_results = []
             
             # Process each pom.xml file
             for pom_file in pom_xml_files_list:
@@ -4099,24 +3921,8 @@ def process_pr_with_local_repo(pr_info, regenerated_files):
                 
                 if maven_success:
                     maven_build_results.append(f"{pom_file}: SUCCESS")
-                    
-                    # Try to start Spring Boot server if Maven build succeeded
-                    if project_structure['project_type'] in ['springboot_only', 'fullstack']:
-                        print(f"[LocalRepo] 🚀 Attempting to start Spring Boot server in: {maven_dir_path}")
-                        
-                        springboot_success = run_springboot_server_with_error_correction(
-                            maven_dir_path, pom_file, repo_path, regenerated_files, pr_info
-                        )
-                        
-                        if springboot_success:
-                            springboot_server_results.append(f"{pom_file}: SERVER STARTED")
-                        else:
-                            springboot_server_results.append(f"{pom_file}: SERVER FAILED")
-                    else:
-                        springboot_server_results.append(f"{pom_file}: NOT SPRING BOOT")
                 else:
                     maven_build_results.append(f"{pom_file}: FAILED")
-                    springboot_server_results.append(f"{pom_file}: MAVEN BUILD FAILED")
             
             # Determine Maven build status
             if not maven_build_results:
@@ -4128,35 +3934,18 @@ def process_pr_with_local_repo(pr_info, regenerated_files):
             else:
                 maven_build_status = "ALL MAVEN BUILDS FAILED"
             
-            # Determine Spring Boot server status
-            if not springboot_server_results:
-                springboot_server_status = "NO SPRING BOOT SERVERS"
-            elif all("SERVER STARTED" in result for result in springboot_server_results):
-                springboot_server_status = "ALL SERVERS STARTED"
-            elif any("SERVER STARTED" in result for result in springboot_server_results):
-                springboot_server_status = "PARTIAL SERVER SUCCESS"
-            else:
-                springboot_server_status = "ALL SERVERS FAILED"
-            
             print(f"[LocalRepo] 🔨 Maven build summary:")
             for result in maven_build_results:
                 print(f"[LocalRepo]   - {result}")
             print(f"[LocalRepo] 🔨 Maven build status: {maven_build_status}")
-            
-            print(f"[LocalRepo] 🚀 Spring Boot server summary:")
-            for result in springboot_server_results:
-                print(f"[LocalRepo]   - {result}")
-            print(f"[LocalRepo] 🚀 Spring Boot server status: {springboot_server_status}")
         
         # Determine overall build status
         if project_structure['project_type'] == 'react_only':
             build_status = npm_build_status
         elif project_structure['project_type'] == 'springboot_only':
-            build_status = f"Maven: {maven_build_status}, Spring Boot: {springboot_server_status}"
-        elif project_structure['project_type'] == 'fullstack':
-            build_status = f"npm: {npm_build_status}, Maven: {maven_build_status}, Spring Boot: {springboot_server_status}"
+            build_status = f"Maven: {maven_build_status}"
         else:
-            build_status = f"npm: {npm_build_status}, Maven: {maven_build_status}"
+            build_status = f"npm: {npm_build_status}"
         
         # TODO: Future user story - Generate and run tests here
         # print("[LocalRepo] Preparing for test generation and execution...")
@@ -4191,7 +3980,6 @@ def process_pr_with_local_repo(pr_info, regenerated_files):
             "project_type": project_structure['project_type'],
             "npm_build_status": npm_build_status if package_json_files_list else "NO NPM FILES",
             "maven_build_status": maven_build_status,
-            "springboot_server_status": springboot_server_status,
             "overall_status": build_status,
             "timestamp": "fullstack_processing_completed"
         }
