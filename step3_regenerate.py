@@ -3572,7 +3572,7 @@ def run_maven_clean_install_with_error_correction(maven_dir_path, pom_file, repo
     Keeps trying until success or max retries reached.
     Returns True if successful, False otherwise.
     """
-    MAX_CORRECTION_ATTEMPTS = 10  # Maximum number of LLM correction attempts
+    MAX_CORRECTION_ATTEMPTS = 5  # Maximum number of LLM correction attempts
     
     def attempt_maven_clean_install():
         """Helper function to attempt mvn clean install"""
@@ -4381,8 +4381,8 @@ def process_pr_with_local_repo(pr_info, regenerated_files):
             for result in maven_dependency_results:
                 print(f"[LocalRepo]   - {result}")
             
-            # Then run Maven build validation (mvn compile) - like npm run build
-            maven_build_status = run_maven_build_with_error_correction(repo_path, pom_xml_files_dict, regenerated_files, pr_info)
+            # mvn clean install already includes compilation, so we use the dependency results as build status
+            maven_build_status = "SUCCESS" if all("SUCCESS" in result for result in maven_dependency_results) else "FAILED"
         
         # Determine overall build status
         if project_structure['project_type'] == 'react_only':
@@ -4390,7 +4390,10 @@ def process_pr_with_local_repo(pr_info, regenerated_files):
         elif project_structure['project_type'] == 'springboot_only':
             build_status = f"Maven: {maven_build_status}"
         else:
-            build_status = f"npm: {npm_build_status}"
+            # For mixed projects, combine both statuses
+            npm_part = f"npm: {npm_build_status}" if package_json_files_list else ""
+            maven_part = f"maven: {maven_build_status}" if pom_xml_files_list else ""
+            build_status = " | ".join(filter(None, [npm_part, maven_part]))
         
         # TODO: Future user story - Generate and run tests here
         # print("[LocalRepo] Preparing for test generation and execution...")
