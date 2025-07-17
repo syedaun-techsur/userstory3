@@ -41,7 +41,7 @@ from mcp import ClientSession
 from mcp.client.stdio import stdio_client
 from mcp import StdioServerParameters
 from dotenv import load_dotenv
-
+load_dotenv()
 # OpenAI for web search (code generation + error correction)
 try:
     import openai
@@ -69,7 +69,7 @@ except ImportError:
     print("❌ PyGithub not installed. Install with: pip install PyGithub")
     exit(1)
 
-load_dotenv()
+
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
 if not GITHUB_TOKEN:
@@ -810,7 +810,13 @@ def collect_files_for_refinement(repo_name: str, pr_number: int, pr_info=None) -
                 # Archives
                 '.zip', '.rar', '.7z', '.tar', '.gz',
                 # Binaries
-                '.exe', '.dll', '.so', '.dylib'
+                '.exe', '.dll', '.so', '.dylib',
+                # Java Archives (JAR files - compiled bytecode, shouldn't be modified)
+                '.jar',
+                # Markdown files (documentation, not code)
+                '.md', '.markdown',
+                # macOS system files
+                '.ds_store'
             ]
             if any(file["filename"].lower().endswith(ext) for ext in asset_extensions):
                 print(f"[DEBUG] Skipping asset/binary file: {file['filename']}")
@@ -890,7 +896,13 @@ def fetch_repo_context(repo_name: str, pr_number: int, target_file: str, pr_info
                 # Archives
                 '.zip', '.rar', '.7z', '.tar', '.gz',
                 # Binaries
-                '.exe', '.dll', '.so', '.dylib'
+                '.exe', '.dll', '.so', '.dylib',
+                # Java Archives (JAR files - compiled bytecode, shouldn't be modified)
+                '.jar',
+                # Markdown files (documentation, not code)
+                '.md', '.markdown',
+                # macOS system files
+                '.ds_store'
             ]
             if any(file.filename.lower().endswith(ext) for ext in asset_extensions):
                 continue
@@ -1214,7 +1226,13 @@ def fetch_dynamic_context(target_file: str, dynamic_context_cache: Dict[str, str
             # Archives
             '.zip', '.rar', '.7z', '.tar', '.gz',
             # Binaries
-            '.exe', '.dll', '.so', '.dylib'
+            '.exe', '.dll', '.so', '.dylib',
+            # Java Archives (JAR files - compiled bytecode, shouldn't be modified)
+            '.jar',
+            # Markdown files (documentation, not code)
+            '.md', '.markdown',
+            # macOS system files
+            '.ds_store'
         ]
         if any(file_name.lower().endswith(ext) for ext in asset_extensions):
             continue
@@ -1301,7 +1319,13 @@ def initialize_dynamic_context_cache(repo_name: str, pr_number: int, pr_info=Non
                 # Archives
                 '.zip', '.rar', '.7z', '.tar', '.gz',
                 # Binaries
-                '.exe', '.dll', '.so', '.dylib'
+                '.exe', '.dll', '.so', '.dylib',
+                # Java Archives (JAR files - compiled bytecode, shouldn't be modified)
+                '.jar',
+                # Markdown files (documentation, not code)
+                '.md', '.markdown',
+                # macOS system files
+                '.ds_store'
             ]
             if any(file.filename.lower().endswith(ext) for ext in asset_extensions):
                 print(f"[Step3] Skipping asset/binary file: {file.filename}")
@@ -1819,6 +1843,261 @@ async def process_single_file_with_web_search(file_name: str, old_code: str, req
             "updated_code": old_code,
             "token_usage": (0, 0, 0)
         }
+
+def compose_springboot_web_search_prompt(requirements: str, code: str, file_name: str, context: str) -> str:
+    """Create a Spring Boot specific web search enhanced prompt for Java/Spring Boot files"""
+    # Get the file extension for the AI to understand the language
+    file_extension = file_name.split('.')[-1].lower()
+    
+    # Check if this is a pom.xml file for special Maven dependency handling
+    is_pom_xml = file_name.endswith('pom.xml')
+    is_java_file = file_extension == 'java'
+    is_properties_file = file_extension in ['properties', 'yml', 'yaml']
+    
+    base_prompt = (
+        f"You are an expert Spring Boot Java developer with access to real-time web search. Your job is to improve the given file `{file_name}` "
+        f"by fixing errors and making meaningful improvements while following Spring Boot best practices.\n\n"
+        f"🎯 **SPRING BOOT IMPROVEMENT-FOCUSED APPROACH:**\n"
+        f"- Fix all Java compilation errors, missing imports, and obvious bugs\n"
+        f"- Improve Spring Boot configuration and dependency injection\n"
+        f"- Optimize performance where beneficial and safe\n"
+        f"- Apply modern Spring Boot patterns and best practices\n"
+        f"- Refactor code for better structure and clarity\n"
+        f"- DO NOT add new features or capabilities beyond what's needed\n"
+        f"- DO NOT add new dependencies unless absolutely necessary for fixes\n"
+        f"- Focus on: error fixes, Spring Boot improvements, performance optimizations, better patterns\n"
+        f"- Avoid: adding unnecessary features, introducing new dependencies\n\n"
+        f"REQUIREMENTS FROM PROJECT:\n{requirements}\n\n"
+        f"---\nRepository Context (other files for reference):\n{context}\n"
+        f"---\nCurrent Code ({file_name} - {file_extension} file):\n```{file_extension}\n{code}\n```\n"
+    )
+    
+    web_search_instructions = (
+        f"\n---\n🌐 **SPRING BOOT WEB SEARCH FOR IMPROVEMENTS AND ERROR PREVENTION:**\n"
+        f"Use web search to identify Spring Boot errors, improvements, and best practices:\n\n"
+        f"1. **SEARCH for Spring Boot compilation errors** and Maven build issues\n"
+        f"2. **VERIFY Java syntax issues** and Spring Boot compatibility problems\n"
+        f"3. **CHECK for deprecated Spring Boot APIs** and modern alternatives\n"
+        f"4. **FIND breaking changes** in Spring Boot versions that affect this code\n"
+        f"5. **LOOK UP security vulnerabilities** in Spring Boot dependencies\n"
+        f"6. **RESEARCH import/package issues** for the specific Spring Boot version\n"
+        f"7. **SEARCH for Spring Boot performance optimizations** and best practices\n"
+        f"8. **LOOK UP modern Spring Boot patterns** and improved coding approaches\n\n"
+        f"🔍 **SPRING BOOT IMPROVEMENT-FOCUSED SEARCH STRATEGY:**\n"
+        f"- 🚨 **PRIORITY**: Search for 'Spring Boot 3 javax to jakarta migration' if javax imports found\n"
+        f"- Search for 'package javax.persistence does not exist Spring Boot 3'\n"
+        f"- Search for 'package javax.validation does not exist Spring Boot 3'\n"
+        f"- Search for 'Spring Boot {file_extension} common errors' or 'Maven build errors'\n"
+        f"- Search for specific error messages if code has issues\n"
+        f"- Search for 'Spring Boot deprecated' + API name\n"
+        f"- Search for 'Spring Boot security vulnerabilities' + dependency name\n"
+        f"- Search for 'Spring Boot performance optimization' + component type\n"
+        f"- Search for 'Spring Boot best practices' + component type\n"
+        f"- Search for 'Spring Boot modern patterns' + component type\n"
+        f"- Verify import syntax for current Spring Boot versions\n\n"
+        f"🎯 **SPRING BOOT PRIORITIZE FIXES AND IMPROVEMENTS:**\n"
+        f"- **CRITICAL: JAVAX TO JAKARTA MIGRATION** - Spring Boot 3.x requires jakarta.* imports instead of javax.*\n"
+        f"- **JAVA COMPILATION ERRORS** - fix code that won't compile\n"
+        f"- **MISSING IMPORTS** - add imports for undefined classes\n"
+        f"- **DEPRECATED SPRING APIS** - replace with modern alternatives\n"
+        f"- **SECURITY ISSUES** - fix Spring Boot security vulnerabilities\n"
+        f"- **MAVEN BUILD ERRORS** - resolve dependency and compilation failures\n"
+        f"- **SPRING BOOT CONFIGURATION** - fix application.properties/yml issues\n"
+        f"- **DEPENDENCY INJECTION** - fix @Autowired and @Component issues\n"
+        f"- **PERFORMANCE** - optimize Spring Boot operations\n"
+        f"- **CODE QUALITY** - improve readability and maintainability\n"
+        f"- **BEST PRACTICES** - apply modern Spring Boot patterns and conventions\n"
+        f"- **STRUCTURE** - refactor for better Spring Boot organization\n\n"
+        f"🚨 **CRITICAL SPRING BOOT 3.x MIGRATION REQUIREMENTS:**\n"
+        f"- **javax.persistence.*** → **jakarta.persistence.*** (Entity, Table, Id, GeneratedValue, Column, etc.)\n"
+        f"- **javax.validation.*** → **jakarta.validation.*** (Valid, NotNull, NotBlank, Email, Size, etc.)\n"
+        f"- **javax.servlet.*** → **jakarta.servlet.*** (HttpServletRequest, HttpServletResponse, etc.)\n"
+        f"- **javax.transaction.*** → **jakarta.transaction.*** (Transactional, etc.)\n"
+        f"- Always check for javax.* imports and replace with jakarta.* for Spring Boot 3.x compatibility\n\n"
+        f"✅ **SPRING BOOT ENCOURAGED IMPROVEMENTS:**\n"
+        f"- Spring Boot performance optimizations where beneficial\n"
+        f"- Code quality and readability improvements\n"
+        f"- Modern Spring Boot patterns and best practices\n"
+        f"- Better error handling and edge cases\n"
+        f"- Improved type safety and validation\n"
+        f"- Cleaner Spring Boot code structure and organization\n"
+        f"- Better dependency injection patterns\n"
+        f"- Optimized Spring Boot configuration\n"
+    )
+    
+    if is_pom_xml:
+        dependency_instructions = (
+            f"\n---\n🔍 **SPRING BOOT POM.XML WEB SEARCH:**\n"
+            f"This is a Maven pom.xml file for Spring Boot. Use web search to identify issues and improvements:\n\n"
+            f"1. **SEARCH for SPRING BOOT ISSUES AND IMPROVEMENTS:**\n"
+            f"   - Spring Boot security vulnerabilities that need fixes\n"
+            f"   - Breaking changes causing Maven build failures\n"
+            f"   - Deprecated Spring Boot starters and modern alternatives\n"
+            f"   - Version conflicts preventing compilation\n"
+            f"   - Spring Boot performance improvements and optimizations\n"
+            f"   - Latest stable Spring Boot versions with better features\n\n"
+            f"2. **VERIFY what's actually imported** in the Java context files\n"
+            f"   - Remove dependencies that are clearly unused\n"
+            f"   - Add Spring Boot starters that are imported but missing\n"
+            f"   - Update to better Spring Boot versions when beneficial\n"
+            f"   - Consider modern alternatives for deprecated Spring Boot starters\n\n"
+            f"3. **SPRING BOOT IMPROVEMENT-FOCUSED SEARCH QUERIES:**\n"
+            f"   - 'Spring Boot [starter-name] security vulnerabilities'\n"
+            f"   - 'Spring Boot [starter-name] deprecated breaking changes'\n"
+            f"   - 'Spring Boot Maven build errors'\n"
+            f"   - 'Spring Boot latest version features'\n"
+            f"   - 'Spring Boot performance improvements'\n"
+            f"   - 'Spring Boot modern alternatives'\n"
+            f"   - 'Maven install errors Spring Boot'\n\n"
+            f"✅ **ENCOURAGED IMPROVEMENTS:**\n"
+            f"   - Update to latest stable Spring Boot versions when beneficial\n"
+            f"   - Replace deprecated Spring Boot starters with modern alternatives\n"
+            f"   - Add performance-optimized Spring Boot starters\n"
+            f"   - Improve dependency organization and structure\n"
+            f"   - Remove unused dependencies to reduce build time\n\n"
+            f"❌ **AVOID:**\n"
+            f"   - Adding unnecessary new Spring Boot dependencies\n"
+            f"   - Breaking changes without clear benefits\n"
+            f"   - Experimental or unstable Spring Boot versions\n"
+            f"   - Over-engineering the dependency structure\n\n"
+            f"💡 **PHILOSOPHY**: Improve pom.xml for better Spring Boot performance and maintainability\n"
+            f"- Fix actual errors and security issues\n"
+            f"- Update to better Spring Boot versions when beneficial\n"
+            f"- Optimize for performance and build time\n"
+            f"- Maintain compatibility while improving quality\n"
+        )
+    elif is_java_file:
+        dependency_instructions = (
+            f"\n---\n📦 **SPRING BOOT JAVA DEPENDENCY WEB SEARCH:**\n"
+            f"For Java import statements and Spring Boot dependencies:\n"
+            f"1. **CRITICAL: JAVAX TO JAKARTA MIGRATION CHECK:**\n"
+            f"   - 🚨 **MANDATORY**: Replace ALL javax.* imports with jakarta.* for Spring Boot 3.x\n"
+            f"   - javax.persistence.* → jakarta.persistence.*\n"
+            f"   - javax.validation.* → jakarta.validation.*\n"
+            f"   - javax.servlet.* → jakarta.servlet.*\n"
+            f"   - javax.transaction.* → jakarta.transaction.*\n\n"
+            f"2. **SEARCH for SPRING BOOT ISSUES AND IMPROVEMENTS:**\n"
+            f"   - Syntax errors in Java imports\n"
+            f"   - Deprecated Spring Boot imports and modern alternatives\n"
+            f"   - Missing imports for undefined classes\n"
+            f"   - Incorrect import paths for Spring Boot packages\n"
+            f"   - Performance-optimized import patterns for Spring Boot\n"
+            f"   - Modern Spring Boot import/package best practices\n\n"
+            f"3. **VERIFY AND IMPROVE:**\n"
+            f"   - Check if imports are causing Maven build failures\n"
+            f"   - Look up breaking changes and modern Spring Boot alternatives\n"
+            f"   - Search for compatibility issues and improvements\n"
+            f"   - Find better import patterns and optimizations for Spring Boot\n\n"
+            f"🚀 **SPRING BOOT IMPROVEMENT-FOCUSED SEARCH:**\n"
+            f"1. **Search for specific error messages** if code has issues\n"
+            f"2. **Check for deprecated Spring Boot APIs** and modern alternatives\n"
+            f"3. **Find import/package problems** and best practices\n"
+            f"4. **Look up Java compilation errors** and type improvements\n"
+            f"5. **Search for Spring Boot performance optimizations** in imports\n"
+            f"6. **Find modern Spring Boot patterns** and better coding approaches\n\n"
+            f"✅ **ENCOURAGED IMPROVEMENTS:**\n"
+            f"- Modern Spring Boot import/package patterns\n"
+            f"- Performance optimizations in Spring Boot imports\n"
+            f"- Better type safety and validation\n"
+            f"- Cleaner import organization for Spring Boot\n"
+            f"- Modern alternatives to deprecated Spring Boot APIs\n"
+            f"- Best practices for Spring Boot development\n"
+        )
+    elif is_properties_file:
+        dependency_instructions = (
+            f"\n---\n⚙️ **SPRING BOOT CONFIGURATION WEB SEARCH:**\n"
+            f"For Spring Boot configuration files (application.properties/yml):\n"
+            f"1. **SEARCH for SPRING BOOT CONFIGURATION ISSUES:**\n"
+            f"   - Syntax errors in configuration properties\n"
+            f"   - Deprecated Spring Boot properties and modern alternatives\n"
+            f"   - Missing configuration for required features\n"
+            f"   - Incorrect property values or formats\n"
+            f"   - Performance-optimized configuration settings\n"
+            f"   - Modern Spring Boot configuration best practices\n\n"
+            f"2. **VERIFY AND IMPROVE:**\n"
+            f"   - Check if configuration is causing startup failures\n"
+            f"   - Look up breaking changes and modern Spring Boot configuration\n"
+            f"   - Search for compatibility issues and improvements\n"
+            f"   - Find better configuration patterns and optimizations\n\n"
+            f"🚀 **SPRING BOOT CONFIGURATION SEARCH:**\n"
+            f"1. **Search for specific configuration errors** if startup fails\n"
+            f"2. **Check for deprecated Spring Boot properties** and modern alternatives\n"
+            f"3. **Find configuration problems** and best practices\n"
+            f"4. **Look up Spring Boot startup errors** and solutions\n"
+            f"5. **Search for Spring Boot performance configuration** optimizations\n"
+            f"6. **Find modern Spring Boot configuration patterns**\n\n"
+            f"✅ **ENCOURAGED IMPROVEMENTS:**\n"
+            f"- Modern Spring Boot configuration patterns\n"
+            f"- Performance optimizations in configuration\n"
+            f"- Better security configuration\n"
+            f"- Cleaner configuration organization\n"
+            f"- Modern alternatives to deprecated properties\n"
+            f"- Best practices for Spring Boot configuration\n"
+        )
+    else:
+        dependency_instructions = (
+            f"\n---\n📦 **SPRING BOOT GENERAL DEPENDENCY WEB SEARCH:**\n"
+            f"For Spring Boot project dependencies and imports:\n"
+            f"1. **SEARCH for SPRING BOOT ISSUES AND IMPROVEMENTS:**\n"
+            f"   - Syntax errors in imports/dependencies\n"
+            f"   - Deprecated Spring Boot APIs and modern alternatives\n"
+            f"   - Missing imports for undefined classes\n"
+            f"   - Incorrect import paths\n"
+            f"   - Performance-optimized patterns for Spring Boot\n"
+            f"   - Modern Spring Boot best practices\n\n"
+            f"2. **VERIFY AND IMPROVE:**\n"
+            f"   - Check if dependencies are causing build failures\n"
+            f"   - Look up breaking changes and modern Spring Boot alternatives\n"
+            f"   - Search for compatibility issues and improvements\n"
+            f"   - Find better patterns and optimizations for Spring Boot\n\n"
+            f"🚀 **SPRING BOOT IMPROVEMENT-FOCUSED SEARCH:**\n"
+            f"1. **Search for specific error messages** if code has issues\n"
+            f"2. **Check for deprecated Spring Boot APIs** and modern alternatives\n"
+            f"3. **Find dependency problems** and best practices\n"
+            f"4. **Look up Spring Boot errors** and solutions\n"
+            f"5. **Search for Spring Boot performance optimizations**\n"
+            f"6. **Find modern Spring Boot patterns** and better coding approaches\n\n"
+            f"✅ **ENCOURAGED IMPROVEMENTS:**\n"
+            f"- Modern Spring Boot patterns\n"
+            f"- Performance optimizations for Spring Boot\n"
+            f"- Better type safety and validation\n"
+            f"- Cleaner organization for Spring Boot\n"
+            f"- Modern alternatives to deprecated Spring Boot APIs\n"
+            f"- Best practices for Spring Boot development\n"
+        )
+    
+    format_instructions = (
+        f"\n---\nPlease return the updated code and changes in the following EXACT format:\n"
+        f"### Changes:\n- A clean bullet-point summary of Spring Boot fixes and improvements.\n\n"
+        f"### Updated Code:\n```{file_extension}\n<ONLY THE IMPROVED CODE HERE>\n```\n\n"
+        f"⚠️ **CRITICAL REQUIREMENTS:**\n"
+        f"1. **SPRING BOOT IMPROVEMENT-FOCUSED APPROACH**: Make changes that fix problems and improve Spring Boot code quality\n"
+        f"2. **BALANCED REFACTORING**: Improve working Spring Boot code while maintaining functionality\n"
+        f"3. **COMPREHENSIVE IMPROVEMENTS**: Fix errors, improve performance, apply Spring Boot best practices\n"
+        f"4. **USE WEB SEARCH** to find Spring Boot improvements, best practices, and modern patterns\n"
+        f"5. **DO NOT include URLs, links, or citations** in the changes section\n"
+        f"6. Do NOT use <think> tags or any other XML-like tags\n"
+        f"7. Provide bullet-point summary of changes under the `### Changes` heading\n"
+        f"8. Provide ONLY ONE code block under the `### Updated Code` heading\n"
+        f"9. Do NOT show the old code again in your response\n"
+        f"10. Do NOT suggest creating new files. Only update this file\n"
+        f"11. The response must start with `### Changes:` and end with the code block\n"
+        f"12. Return improved Spring Boot code with better quality, performance, and maintainability\n"
+        f"13. Return the SAME TYPE of code as the original file ({file_extension})\n"
+        f"14. **IF NO IMPROVEMENTS ARE NEEDED:**\n"
+        f"    - In the ### Changes section, write: 'No improvements needed.'\n"
+        f"    - In the ### Updated Code section, return the original code unchanged.\n"
+        f"15. **CHANGES FORMAT**: Use simple, clean bullet points like:\n"
+        f"    - Fixed Java compilation error in import statement\n"
+        f"    - Added missing Spring Boot import for undefined class\n"
+        f"    - Optimized Spring Boot performance with better algorithm\n"
+        f"    - Applied modern Spring Boot patterns and best practices\n"
+        f"    - Improved Spring Boot code readability and maintainability\n"
+        f"    - Enhanced Spring Boot type safety and error handling\n"
+        f"16. **CHANGES SHOULD BE MEANINGFUL**: Report both fixes and Spring Boot improvements\n"
+    )
+    
+    return base_prompt + web_search_instructions + dependency_instructions + format_instructions
 
 def compose_web_search_prompt(requirements: str, code: str, file_name: str, context: str) -> str:
     """Create a web search enhanced prompt for conservative code correction with error prevention"""
@@ -3896,40 +4175,30 @@ def process_pr_with_local_repo(pr_info, regenerated_files):
         if pom_xml_files_list:
             print(f"[LocalRepo] 🔨 Maven pom.xml files detected: {pom_xml_files_list}")
             
-            maven_build_results = []
-            
-            # Process each pom.xml file
+            # First run Maven dependency resolution (mvn clean install -DskipTests)
+            maven_dependency_results = []
             for pom_file in pom_xml_files_list:
-                # Get the directory containing the pom.xml
                 maven_dir = os.path.dirname(pom_file) if os.path.dirname(pom_file) else "."
                 maven_dir_path = os.path.join(repo_path, maven_dir)
                 
-                print(f"[LocalRepo] 🔨 Running mvn clean install in directory: {maven_dir_path}")
+                print(f"[LocalRepo] 🔨 Running mvn clean install (dependency resolution) in directory: {maven_dir_path}")
                 
-                # Try mvn clean install with intelligent error correction
+                # Try mvn clean install with intelligent error correction for dependency resolution
                 maven_success = run_maven_clean_install_with_error_correction(
                     maven_dir_path, pom_file, repo_path, regenerated_files, pr_info
                 )
                 
                 if maven_success:
-                    maven_build_results.append(f"{pom_file}: SUCCESS")
+                    maven_dependency_results.append(f"{pom_file}: DEPENDENCY SUCCESS")
                 else:
-                    maven_build_results.append(f"{pom_file}: FAILED")
+                    maven_dependency_results.append(f"{pom_file}: DEPENDENCY FAILED")
             
-            # Determine Maven build status
-            if not maven_build_results:
-                maven_build_status = "NO MAVEN BUILDS RUN"
-            elif all("SUCCESS" in result for result in maven_build_results):
-                maven_build_status = "ALL MAVEN BUILDS SUCCESSFUL"
-            elif any("SUCCESS" in result for result in maven_build_results):
-                maven_build_status = "PARTIAL MAVEN SUCCESS"
-            else:
-                maven_build_status = "ALL MAVEN BUILDS FAILED"
-            
-            print(f"[LocalRepo] 🔨 Maven build summary:")
-            for result in maven_build_results:
+            print(f"[LocalRepo] 🔨 Maven dependency resolution summary:")
+            for result in maven_dependency_results:
                 print(f"[LocalRepo]   - {result}")
-            print(f"[LocalRepo] 🔨 Maven build status: {maven_build_status}")
+            
+            # Then run Maven build validation (mvn compile) - like npm run build
+            maven_build_status = run_maven_build_with_error_correction(repo_path, pom_xml_files_dict, regenerated_files, pr_info)
         
         # Determine overall build status
         if project_structure['project_type'] == 'react_only':
@@ -3988,30 +4257,27 @@ def process_pr_with_local_repo(pr_info, regenerated_files):
         gradle_build_status = "NO GRADLE FILES"
         if gradle_files_list:
             print(f"[LocalRepo] 🛠️ Gradle files detected: {gradle_files_list}")
-            gradle_build_results = []
+            
+            # First run Gradle dependency resolution (gradle build with full pipeline)
+            gradle_dependency_results = []
             for gradle_file in gradle_files_list:
                 gradle_dir = os.path.dirname(gradle_file) if os.path.dirname(gradle_file) else "."
                 gradle_dir_path = os.path.join(repo_path, gradle_dir)
-                print(f"[LocalRepo] 🛠️ Running gradle build in directory: {gradle_dir_path}")
+                print(f"[LocalRepo] 🛠️ Running gradle build (dependency resolution) in directory: {gradle_dir_path}")
                 gradle_success = run_gradle_build_with_error_correction(
                     gradle_dir_path, gradle_file, repo_path, regenerated_files, pr_info
                 )
                 if gradle_success:
-                    gradle_build_results.append(f"{gradle_file}: SUCCESS")
+                    gradle_dependency_results.append(f"{gradle_file}: DEPENDENCY SUCCESS")
                 else:
-                    gradle_build_results.append(f"{gradle_file}: FAILED")
-            if not gradle_build_results:
-                gradle_build_status = "NO GRADLE BUILDS RUN"
-            elif all("SUCCESS" in result for result in gradle_build_results):
-                gradle_build_status = "ALL GRADLE BUILDS SUCCESSFUL"
-            elif any("SUCCESS" in result for result in gradle_build_results):
-                gradle_build_status = "PARTIAL GRADLE SUCCESS"
-            else:
-                gradle_build_status = "ALL GRADLE BUILDS FAILED"
-            print(f"[LocalRepo] 🛠️ Gradle build summary:")
-            for result in gradle_build_results:
+                    gradle_dependency_results.append(f"{gradle_file}: DEPENDENCY FAILED")
+            
+            print(f"[LocalRepo] 🛠️ Gradle dependency resolution summary:")
+            for result in gradle_dependency_results:
                 print(f"[LocalRepo]   - {result}")
-            print(f"[LocalRepo] 🛠️ Gradle build status: {gradle_build_status}")
+            
+            # Gradle build already handles compilation validation - no separate compileJava needed
+            gradle_build_status = "GRADLE BUILD COMPLETED"
     except Exception as e:
         print(f"[LocalRepo] ❌ Error during local repo processing: {e}")
         print("[LocalRepo] Continuing with original files...")
@@ -4667,6 +4933,20 @@ def run_gradle_build_with_error_correction(gradle_dir_path, gradle_file, repo_pa
         """Helper function to attempt gradle build"""
         gradlew_path = os.path.join(gradle_dir_path, 'gradlew')
         if os.path.exists(gradlew_path):
+            # Make gradlew executable on Unix/Mac systems
+            try:
+                subprocess.run(
+                    ['chmod', '+x', 'gradlew'],
+                    cwd=gradle_dir_path,
+                    capture_output=True,
+                    text=True,
+                    timeout=30  # 30 second timeout for chmod
+                )
+                print(f"[LocalRepo] 🔧 Made gradlew executable in {gradle_dir_path}")
+            except Exception as e:
+                print(f"[LocalRepo] ⚠️ Warning: Could not make gradlew executable: {e}")
+                # Continue anyway - gradlew might already be executable or we're on Windows
+            
             cmd = ['./gradlew', 'build', '--no-daemon', '--stacktrace']
         else:
             cmd = ['gradle', 'build', '--no-daemon', '--stacktrace']
@@ -4735,7 +5015,13 @@ def run_gradle_build_with_error_correction(gradle_dir_path, gradle_file, repo_pa
         if correction_history:
             correction_context = f"\n\nPREVIOUS CORRECTIONS APPLIED:\n" + "\n".join([f"Attempt {i+1}: {corr}" for i, corr in enumerate(correction_history)])
 
-        print(f"[LocalRepo] 🤖 Sending Gradle error to LLM for analysis...")
+        # Analyze the error first to provide better logging
+        error_analysis = analyze_gradle_build_error(full_error)
+        print(f"[LocalRepo] 🔍 Error analysis: {error_analysis['error_type']} (severity: {error_analysis['severity']})")
+        if error_analysis["missing_java_dependencies"]:
+            print(f"[LocalRepo] 🎯 Identified missing dependencies: {error_analysis['missing_java_dependencies']}")
+        
+        print(f"[LocalRepo] 🤖 Sending Gradle error to enhanced LLM correction system...")
 
         # Always use web search for error correction
         try:
@@ -4764,7 +5050,18 @@ def run_gradle_build_with_error_correction(gradle_dir_path, gradle_file, repo_pa
             with open(gradle_file_path, "w", encoding="utf-8") as f:
                 f.write(corrected_gradle_content)
             print(f"[LocalRepo] ✅ Applied LLM Gradle correction attempt {attempt}")
-            correction_history.append(f"Fixed Gradle dependency/configuration issues")
+            # Create more descriptive correction history based on error analysis
+            if error_analysis["error_type"] == "java_compilation":
+                if error_analysis["missing_java_dependencies"]:
+                    correction_history.append(f"Added missing Java dependencies for compilation errors")
+                else:
+                    correction_history.append(f"Fixed Java compilation issues")
+            elif error_analysis["error_type"] == "gradle_plugin":
+                correction_history.append(f"Added missing Gradle plugins")
+            elif error_analysis["error_type"] == "gradle_config":
+                correction_history.append(f"Fixed Gradle configuration issues")
+            else:
+                correction_history.append(f"Applied general Gradle corrections")
         except Exception as e:
             print(f"[LocalRepo] ❌ Error writing corrected gradle file: {e}")
             continue
@@ -4805,9 +5102,881 @@ def run_gradle_build_with_error_correction(gradle_dir_path, gradle_file, repo_pa
         }
     return False
 
+
+
+async def fix_gradle_errors_with_llm(gradle_content, gradle_error, gradle_file_path, pr_info):
+    """
+    Use LLM to fix Gradle build.gradle/build.gradle.kts based on build errors.
+    Returns corrected gradle content or None if correction fails.
+    """
+    if not pr_info:
+        print("[LocalRepo] 🔧 No PR info available for LLM Gradle error correction")
+        return None
+    
+    print(f"[LocalRepo] 🤖 Using LLM to fix Gradle errors...")
+    
+    # Create Gradle error correction prompt
+    gradle_error_prompt = f"""You are an expert Gradle and Spring Boot developer. A Gradle build failed with the following error:
+
+---
+GRADLE BUILD ERROR:
+{gradle_error}
+---
+
+Current {gradle_file_path} content:
+```gradle
+{gradle_content}
+```
+
+🔍 **GRADLE ERROR ANALYSIS:**
+The Gradle build errors indicate issues with dependencies, plugins, or configuration. Common patterns:
+1. **"Could not resolve dependencies"** - Version conflicts or missing repositories
+2. **"Plugin not found"** - Missing or incorrect plugin configuration
+3. **"Compilation failure"** - Java version or source compatibility issues
+4. **"Task execution failed"** - Plugin or dependency issues
+5. **"Configuration problems"** - Build script syntax or configuration errors
+
+📦 **GRADLE PHILOSOPHY: Stable and Compatible Dependencies**
+- Use stable, well-tested versions of dependencies and plugins
+- Ensure compatibility between Spring Boot version and other dependencies
+- Fix version conflicts and missing dependencies
+- Use proper Gradle plugin configurations and syntax
+
+🔧 **CRITICAL INSTRUCTIONS:**
+1. ANALYZE the Gradle error to identify the exact problem
+2. FIX dependency versions, conflicts, and missing dependencies
+3. ENSURE proper plugin configurations and syntax
+4. VERIFY Java version compatibility
+5. Use stable Spring Boot versions and compatible dependencies
+6. Keep the build.gradle structure clean and valid
+7. Handle both Groovy (build.gradle) and Kotlin (build.gradle.kts) syntax
+
+Return your response in this EXACT format:
+
+### Analysis:
+- Brief explanation of the Gradle errors and how you fixed them
+
+### Fixed {gradle_file_path}:
+```gradle
+<CORRECTED GRADLE CONTENT HERE>
+```
+
+IMPORTANT: Return ONLY the corrected gradle file in the code block."""
+
+    try:
+        # Use the existing MCP infrastructure
+        server_params = StdioServerParameters(command="python", args=["server.py"])
+        
+        async with stdio_client(server_params) as (read_stream, write_stream):
+            async with ClientSession(read_stream, write_stream) as session:
+                await session.initialize()
+                
+                # Call LLM for Gradle error correction
+                result = await asyncio.wait_for(
+                    session.call_tool("codegen", arguments={"prompt": gradle_error_prompt}),
+                    timeout=120  # 2 minute timeout for Gradle error correction
+                )
+                
+                # Extract response
+                response = extract_response_content(result, "gradle_error_correction")
+                
+                # Parse the corrected gradle content
+                corrected_gradle = extract_updated_code(response)
+                if corrected_gradle:
+                    # Basic validation - check if it looks like a gradle file
+                    if (('dependencies' in corrected_gradle or 'plugins' in corrected_gradle) and 
+                        ('apply' in corrected_gradle or 'implementation' in corrected_gradle or 
+                         'compile' in corrected_gradle or 'id(' in corrected_gradle)):
+                        print(f"[LocalRepo] ✅ LLM provided valid gradle correction")
+                        return corrected_gradle
+                    else:
+                        print(f"[LocalRepo] ❌ LLM correction doesn't look like valid gradle file")
+                        return None
+                else:
+                    print(f"[LocalRepo] ❌ Could not extract corrected gradle file from LLM response")
+                    return None
+                    
+    except Exception as e:
+        print(f"[LocalRepo] ❌ Error during LLM Gradle error correction: {e}")
+        return None
+
+async def fix_maven_java_errors_with_web_search(build_error, affected_files, maven_dir_path, pr_info):
+    """
+    Use OpenAI with web search to fix Java source code files for Maven compilation errors.
+    Returns dict of corrected files or None if correction fails.
+    """
+    if not OPENAI_CLIENT:
+        print("[LocalRepo] ⚠️ OpenAI client not available - falling back to regular LLM")
+        return await fix_maven_java_errors_with_llm(build_error, affected_files, maven_dir_path, pr_info)
+    
+    if not pr_info:
+        print("[LocalRepo] 🔧 No PR info available for web search Maven Java error correction")
+        return None
+    
+    print(f"[LocalRepo] 🌐 Using OpenAI with web search to fix Maven Java errors...")
+    
+    # Create web search prompt for Maven Java errors
+    web_search_prompt = f"""I'm getting Maven Java compilation errors. Here are the exact errors:
+
+{build_error}
+
+Please search for the latest information and help me fix these specific Maven Java compilation errors. I need:
+1. Current Java API and syntax for the packages/libraries involved
+2. Proper Spring Boot Java usage patterns
+3. How to fix import/export errors and missing classes
+4. Compatible version information and breaking changes in Java dependencies
+5. Modern Java best practices for Maven projects
+
+Please provide corrected Java files with proper imports, annotations, and syntax."""
+
+    try:
+        # Use OpenAI Responses API with web search
+        response = await asyncio.to_thread(
+            OPENAI_CLIENT.responses.create,
+            model="gpt-4.1-mini",
+            tools=[{"type": "web_search_preview"}],
+            input=web_search_prompt
+        )
+        
+        if hasattr(response, 'output_text'):
+            response_text = response.output_text
+        else:
+            print("[LocalRepo] ❌ Could not extract response from OpenAI web search")
+            return None
+        
+        print(f"[LocalRepo] 🌐 Web search completed, falling back to regular LLM for file parsing...")
+        # Fall back to regular LLM for complex Java file parsing
+        return await fix_maven_java_errors_with_llm(build_error, affected_files, maven_dir_path, pr_info)
+            
+    except Exception as e:
+        print(f"[LocalRepo] ❌ Error during web search Maven Java error correction: {e}")
+        return await fix_maven_java_errors_with_llm(build_error, affected_files, maven_dir_path, pr_info)
+
+async def fix_maven_java_errors_with_llm(build_error, affected_files, maven_dir_path, pr_info):
+    """
+    Use LLM to fix Java source code files for Maven compilation errors.
+    Returns dict of corrected files or None if correction fails.
+    """
+    if not pr_info:
+        print("[LocalRepo] 🔧 No PR info available for LLM Maven Java error correction")
+        return None
+    
+    print(f"[LocalRepo] 🤖 Using LLM to fix Maven Java errors...")
+    
+    # Analyze the build error to identify problematic Java files
+    affected_file_contents = {}
+    for file_path in affected_files:
+        full_path = os.path.join(maven_dir_path, file_path)
+        if os.path.exists(full_path):
+            try:
+                with open(full_path, "r", encoding="utf-8") as f:
+                    affected_file_contents[file_path] = f.read()
+            except Exception as e:
+                print(f"[LocalRepo] ⚠️ Could not read {file_path}: {e}")
+                continue
+    
+    if not affected_file_contents:
+        print("[LocalRepo] ❌ No affected Java files could be read for LLM Maven error correction")
+        return None
+    
+    # Create Maven Java error correction prompt
+    files_context = ""
+    for file_path, content in affected_file_contents.items():
+        files_context += f"\n\n--- {file_path} ---\n```java\n{content}\n```"
+    
+    maven_java_error_prompt = f"""You are an expert Java and Spring Boot developer. A Maven compilation failed with the following error:
+
+---
+MAVEN COMPILATION ERROR:
+{build_error}
+---
+
+Affected Java files that need to be fixed:
+{files_context}
+
+🚫 **COMMON MAVEN JAVA COMPILATION ERRORS AND SOLUTIONS:**
+
+1. **🚨 CRITICAL: JAVAX TO JAKARTA MIGRATION (Spring Boot 3.x)** 
+   - `package javax.persistence does not exist` → Use `jakarta.persistence.*`
+   - `package javax.validation does not exist` → Use `jakarta.validation.*`
+   - `package javax.servlet does not exist` → Use `jakarta.servlet.*`
+   - `package javax.transaction does not exist` → Use `jakarta.transaction.*`
+   - **MANDATORY**: Replace ALL javax.* imports with jakarta.* for Spring Boot 3.x compatibility
+
+2. **Missing Import Errors** (`package X does not exist`, `cannot find symbol`)
+   - Solution: Add missing import statements for undefined classes
+
+3. **Incorrect Package Declaration** (`package declaration does not match directory`)
+   - Solution: Fix package statement to match directory structure
+
+4. **Missing Annotations** (Spring Boot classes missing @Component, @Service, etc.)
+   - Solution: Add proper Spring Boot annotations
+
+5. **Syntax Errors** (missing semicolons, braces, etc.)
+   - Solution: Fix Java syntax errors
+
+🚨 **CRITICAL JAVAX TO JAKARTA MIGRATION MAPPINGS:**
+- javax.persistence.Entity → jakarta.persistence.Entity
+- javax.persistence.Table → jakarta.persistence.Table  
+- javax.persistence.Id → jakarta.persistence.Id
+- javax.persistence.GeneratedValue → jakarta.persistence.GeneratedValue
+- javax.persistence.Column → jakarta.persistence.Column
+- javax.validation.Valid → jakarta.validation.Valid
+- javax.validation.constraints.NotNull → jakarta.validation.constraints.NotNull
+- javax.validation.constraints.NotBlank → jakarta.validation.constraints.NotBlank
+- javax.validation.constraints.Email → jakarta.validation.constraints.Email
+- javax.validation.constraints.Size → jakarta.validation.constraints.Size
+
+Return your response in this EXACT format:
+
+### Analysis:
+- Brief explanation of the compilation errors and how you fixed them
+
+### Fixed Files:
+For each file that needs changes, use this format:
+
+#### {file_path}
+```java
+<CORRECTED JAVA FILE CONTENT HERE>
+```
+
+IMPORTANT: Only include files that actually need changes."""
+
+    try:
+        # Use the existing MCP infrastructure
+        server_params = StdioServerParameters(command="python", args=["server.py"])
+        
+        async with stdio_client(server_params) as (read_stream, write_stream):
+            async with ClientSession(read_stream, write_stream) as session:
+                await session.initialize()
+                
+                # Call LLM for Maven Java error correction
+                result = await asyncio.wait_for(
+                    session.call_tool("codegen", arguments={"prompt": maven_java_error_prompt}),
+                    timeout=180  # 3 minute timeout for Java error correction
+                )
+                
+                # Extract response
+                response = extract_response_content(result, "maven_java_error_correction")
+                
+                # Parse the corrected files from the response
+                corrected_files = {}
+                patterns = [
+                    r'#### ([^\n{]+)\n```[a-zA-Z0-9]*\n([\s\S]*?)```',
+                    r'#### ([^\n]+\.java)\n```[a-zA-Z0-9]*\n([\s\S]*?)```',
+                ]
+                
+                for pattern in patterns:
+                    file_sections = re.findall(pattern, response, re.IGNORECASE)
+                    for file_path, file_content in file_sections:
+                        file_path = file_path.strip()
+                        file_content = file_content.strip()
+                        if file_path in affected_file_contents:
+                            corrected_files[file_path] = file_content
+                            print(f"[LocalRepo] ✅ LLM provided correction for {file_path}")
+                    if corrected_files:
+                        break
+                
+                return corrected_files if corrected_files else None
+                    
+    except Exception as e:
+        print(f"[LocalRepo] ❌ Error during LLM Maven Java error correction: {e}")
+        return None
+
+
+
+def run_maven_build_with_error_correction(repo_path, pom_xml_files, regenerated_files, pr_info):
+    """
+    Run mvn compile (build without tests/server) with intelligent error correction using LLM in a loop.
+    Similar to npm run build - focuses on compilation validation, not server startup.
+    Keeps trying until success or max retries reached for each Maven project.
+    Returns build status string.
+    """
+    if not pom_xml_files:
+        print("[LocalRepo] 🔨 No pom.xml files found, skipping Maven build validation")
+        return "SKIPPED - No Maven files"
+    
+    print(f"[LocalRepo] 🔨 Starting Maven build validation with intelligent error correction...")
+    
+    # CRITICAL: Preemptively fix javax/jakarta migration issues before attempting any builds
+    print(f"[LocalRepo] 🚨 Running preemptive javax/jakarta migration check for all Maven projects...")
+    for pom_file in pom_xml_files.keys():
+        maven_dir = os.path.dirname(pom_file) if os.path.dirname(pom_file) else "."
+        maven_dir_path = os.path.join(repo_path, maven_dir)
+        detect_and_fix_javax_jakarta_migration(maven_dir_path, regenerated_files)
+    
+    build_results = []
+    MAX_BUILD_CORRECTION_ATTEMPTS = 15  # Maximum number of LLM correction attempts per Maven project
+    
+    def attempt_maven_compile(maven_dir_path):
+        """Helper function to attempt mvn compile (build without tests)"""
+        try:
+            result = subprocess.run(
+                ["mvn", "clean", "compile", "-DskipTests"],
+                cwd=maven_dir_path,
+                capture_output=True,
+                text=True,
+                timeout=600  # 10 minute timeout for compile
+            )
+            return result
+        except subprocess.TimeoutExpired:
+            print(f"[LocalRepo] ❌ mvn compile timed out after 10 minutes")
+            return None
+        except FileNotFoundError:
+            print("[LocalRepo] ❌ mvn not found for build. Please ensure Maven is installed.")
+            return None
+        except Exception as e:
+            print(f"[LocalRepo] ❌ Error during mvn compile: {e}")
+            return None
+    
+    for pom_file in pom_xml_files.keys():
+        # Get the directory containing the pom.xml
+        maven_dir = os.path.dirname(pom_file) if os.path.dirname(pom_file) else "."
+        maven_dir_path = os.path.join(repo_path, maven_dir)
+        
+        print(f"[LocalRepo] 🔨 Running 'mvn clean compile' in directory: {maven_dir_path}")
+        
+        # Initial build attempt
+        result = attempt_maven_compile(maven_dir_path)
+        
+        if result is None:
+            build_results.append(f"{pom_file}: BUILD ERROR")
+            continue
+        
+        if result.returncode == 0:
+            print(f"[LocalRepo] ✅ mvn compile completed successfully in {maven_dir}")
+            build_results.append(f"{pom_file}: SUCCESS")
+            
+            # Check if compile generated artifacts (optional - just for logging)
+            target_dir = os.path.join(maven_dir_path, "target", "classes")
+            if os.path.exists(target_dir):
+                print(f"[LocalRepo] 📁 Compiled classes generated in {maven_dir}/target/classes/")
+            continue
+        
+        # Build failed - start correction loop
+        print(f"[LocalRepo] 🔄 Starting LLM Maven build error correction loop (max {MAX_BUILD_CORRECTION_ATTEMPTS} attempts)...")
+        
+        correction_history = []  # Track all corrections applied
+        build_success = False
+        
+        for attempt in range(1, MAX_BUILD_CORRECTION_ATTEMPTS + 1):
+            print(f"[LocalRepo] 🤖 LLM Maven Build Correction Attempt {attempt}/{MAX_BUILD_CORRECTION_ATTEMPTS}")
+            
+            if result is None:
+                print(f"[LocalRepo] ❌ mvn compile failed (timeout/error)")
+                break
+                
+            print(f"[LocalRepo] ❌ mvn compile failed with return code {result.returncode}")
+            print(f"[LocalRepo] 📄 Maven build error output:")
+            print(f"[LocalRepo] stdout: {result.stdout}")
+            print(f"[LocalRepo] stderr: {result.stderr}")
+            
+            # Combine error output for analysis
+            full_build_error = f"STDOUT:\n{result.stdout}\n\nSTDERR:\n{result.stderr}"
+            
+            # Check if this is a dependency-related build error
+            is_dependency_error = any(keyword in full_build_error.lower() for keyword in [
+                'could not resolve dependencies', 'dependency not found', 'missing dependency', 
+                'failed to execute goal', 'compilation failure', 'cannot find symbol',
+                'package does not exist', 'cannot access'
+            ])
+            
+            if is_dependency_error:
+                print(f"[LocalRepo] 🔍 Detected Maven dependency-related build error. Checking pom.xml...")
+                
+                # Try to fix pom.xml first for dependency errors
+                pom_xml_path = os.path.join(maven_dir_path, "pom.xml") 
+                if os.path.exists(pom_xml_path):
+                    try:
+                        with open(pom_xml_path, "r", encoding="utf-8") as f:
+                            current_pom_xml = f.read()
+                        
+                        print(f"[LocalRepo] 🤖 Using LLM to fix pom.xml for Maven dependency errors...")
+                        
+                        # Always use web search to fix pom.xml based on build dependency errors
+                        corrected_pom_xml = asyncio.run(
+                            fix_maven_errors_with_web_search(
+                                current_pom_xml,
+                                full_build_error,
+                                pom_file,
+                                pr_info
+                            )
+                        )
+                        
+                        if corrected_pom_xml and corrected_pom_xml.strip() != current_pom_xml.strip():
+                            # Write corrected pom.xml
+                            with open(pom_xml_path, "w", encoding="utf-8") as f:
+                                f.write(corrected_pom_xml)
+                            
+                            # Update regenerated_files
+                            regenerated_files[pom_file] = {
+                                "old_code": current_pom_xml,
+                                "changes": f"Fixed Maven dependencies for build errors (attempt {attempt})",
+                                "updated_code": corrected_pom_xml
+                            }
+                            
+                            print(f"[LocalRepo] ✅ Applied Maven pom.xml corrections")
+                            
+                            # Retry build
+                            print(f"[LocalRepo] 🔄 Retrying mvn compile after pom.xml corrections...")
+                            result = attempt_maven_compile(maven_dir_path)
+                            if result is not None and result.returncode == 0:
+                                print(f"[LocalRepo] 🎉 mvn compile succeeded after pom.xml corrections!")
+                                build_results.append(f"{pom_file}: SUCCESS (after pom.xml fix in attempt {attempt})")
+                                build_success = True
+                                break
+                            else:
+                                print(f"[LocalRepo] ⚠️ Build still failed after pom.xml corrections, continuing with source code corrections...")
+                        else:
+                            print(f"[LocalRepo] ⚠️ LLM did not provide useful pom.xml corrections")
+                            
+                    except Exception as e:
+                        print(f"[LocalRepo] ❌ Error trying to fix pom.xml for dependency errors: {e}")
+            
+            # Extract affected Java files from the error message (for source code fixes)
+            affected_files = extract_maven_affected_files_from_error(full_build_error, maven_dir_path)
+            
+            if not affected_files:
+                print(f"[LocalRepo] ⚠️ Could not identify specific Java files causing Maven build errors")
+                # Try to guess common problematic files
+                common_files = [
+                    'src/main/java/Application.java',
+                    'src/main/java/com/example/Application.java',
+                    'src/main/java/Main.java'
+                ]
+                for common_file in common_files:
+                    if os.path.exists(os.path.join(maven_dir_path, common_file)):
+                        affected_files.append(common_file)
+                        break
+            
+            if not affected_files:
+                print(f"[LocalRepo] ❌ No Java files found to correct, skipping LLM correction")
+                break
+            
+            print(f"[LocalRepo] 🎯 Identified affected Java files: {affected_files}")
+            
+            # Always use web search for Maven Java build error correction
+            try:
+                corrected_files = asyncio.run(
+                    fix_maven_java_errors_with_web_search(
+                        full_build_error,
+                        affected_files,
+                        maven_dir_path,
+                        pr_info
+                    )
+                )
+            except Exception as e:
+                print(f"[LocalRepo] ❌ Error running LLM Maven Java correction: {e}")
+                continue  # Try next iteration
+            
+            if not corrected_files:
+                print(f"[LocalRepo] ❌ LLM could not provide valid Java corrections for attempt {attempt}")
+                continue  # Try next iteration
+            
+            # Apply corrections to Java files
+            files_changed = 0
+            for file_path, corrected_content in corrected_files.items():
+                full_file_path = os.path.join(maven_dir_path, file_path)
+                try:
+                    # Read current content to check if LLM made changes
+                    with open(full_file_path, "r", encoding="utf-8") as f:
+                        current_content = f.read()
+                    
+                    if corrected_content.strip() == current_content.strip():
+                        print(f"[LocalRepo] ⚠️ LLM returned same content for {file_path} (no changes)")
+                        continue
+                    
+                    # Write corrected content
+                    with open(full_file_path, "w", encoding="utf-8") as f:
+                        f.write(corrected_content)
+                    
+                    # Update regenerated_files with the correction
+                    relative_file_path = os.path.join(maven_dir, file_path) if maven_dir != "." else file_path
+                    regenerated_files[relative_file_path] = {
+                        "old_code": current_content,
+                        "changes": f"LLM-corrected Maven Java build errors (attempt {attempt})",
+                        "updated_code": corrected_content
+                    }
+                    
+                    files_changed += 1
+                    print(f"[LocalRepo] ✅ Applied LLM Maven Java correction to {file_path}")
+                    
+                except Exception as e:
+                    print(f"[LocalRepo] ❌ Error writing corrected Java file {file_path}: {e}")
+                    continue
+            
+            if files_changed == 0:
+                print(f"[LocalRepo] ⚠️ No Java files were actually changed in attempt {attempt}")
+                continue
+            
+            # Track this correction
+            correction_history.append(f"Fixed {files_changed} Java files to resolve Maven build errors")
+            
+            # Retry build with corrected files
+            print(f"[LocalRepo] 🔄 Retrying mvn compile with LLM Java corrections {attempt}...")
+            result = attempt_maven_compile(maven_dir_path)
+            
+            if result is None:
+                continue  # Try next iteration
+            
+            if result.returncode == 0:
+                print(f"[LocalRepo] 🎉 mvn compile succeeded after {attempt} LLM correction(s)!")
+                build_results.append(f"{pom_file}: SUCCESS (after {attempt} corrections)")
+                build_success = True
+                break
+            
+            # If we get here, this correction didn't work, continue to next attempt
+            print(f"[LocalRepo] ⚠️ mvn compile still failed after correction {attempt}, trying next iteration...")
+        
+        # Build loop completed
+        if not build_success:
+            print(f"[LocalRepo] ❌ mvn compile failed after {MAX_BUILD_CORRECTION_ATTEMPTS} LLM correction attempts")
+            build_results.append(f"{pom_file}: FAILED (after {len(correction_history)} corrections)")
+            if result is not None:
+                print(f"[LocalRepo] 📄 Final Maven build error output:")
+                print(f"[LocalRepo] stdout: {result.stdout}")
+                print(f"[LocalRepo] stderr: {result.stderr}")
+    
+    # Determine overall Maven build status
+    if not build_results:
+        overall_status = "NO MAVEN BUILDS RUN"
+    elif all("SUCCESS" in result for result in build_results):
+        overall_status = "ALL MAVEN BUILDS SUCCESSFUL"
+    elif any("SUCCESS" in result for result in build_results):
+        overall_status = "PARTIAL MAVEN SUCCESS"
+    else:
+        overall_status = "ALL MAVEN BUILDS FAILED"
+    
+    print(f"[LocalRepo] 🔨 Maven build validation summary:")
+    for result in build_results:
+        print(f"[LocalRepo]   - {result}")
+    print(f"[LocalRepo] 🔨 Overall Maven build status: {overall_status}")
+    
+    # Add Maven build status to regenerated_files metadata (for PR description)
+    build_summary = {
+        "status": overall_status,
+        "details": build_results,
+        "timestamp": "maven_build_validation_with_correction_completed"
+    }
+    
+    # Store Maven build info in a special metadata entry
+    regenerated_files["_maven_build_validation_metadata"] = {
+        "old_code": "",
+        "changes": f"Maven build validation with LLM error correction: {overall_status}",
+        "updated_code": json.dumps(build_summary, indent=2)
+    }
+    
+    print(f"[LocalRepo] 🔨 Maven build validation with error correction completed.")
+    return overall_status
+
+
+
+def detect_and_fix_javax_jakarta_migration(maven_dir_path, regenerated_files):
+    """
+    Automatically detect and fix javax.* to jakarta.* migration issues in Java files.
+    This should prevent the need for build error correction in most cases.
+    """
+    print(f"[LocalRepo] 🔍 Scanning for javax.* imports that need jakarta.* migration...")
+    
+    # Define javax to jakarta mappings
+    javax_to_jakarta_mappings = {
+        'javax.persistence': 'jakarta.persistence',
+        'javax.validation': 'jakarta.validation', 
+        'javax.servlet': 'jakarta.servlet',
+        'javax.transaction': 'jakarta.transaction',
+        'javax.annotation': 'jakarta.annotation',
+        'javax.inject': 'jakarta.inject',
+        'javax.interceptor': 'jakarta.interceptor',
+        'javax.decorator': 'jakarta.decorator',
+        'javax.enterprise': 'jakarta.enterprise',
+        'javax.ejb': 'jakarta.ejb',
+        'javax.ws.rs': 'jakarta.ws.rs',
+        'javax.json': 'jakarta.json',
+        'javax.xml.bind': 'jakarta.xml.bind',
+        'javax.activation': 'jakarta.activation'
+    }
+    
+    files_fixed = 0
+    
+    # Scan all Java files in the project
+    for root, dirs, files in os.walk(maven_dir_path):
+        for file in files:
+            if file.endswith('.java'):
+                file_path = os.path.join(root, file)
+                relative_path = os.path.relpath(file_path, maven_dir_path)
+                
+                try:
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                    
+                    original_content = content
+                    needs_fix = False
+                    
+                    # Check for javax imports
+                    for javax_package, jakarta_package in javax_to_jakarta_mappings.items():
+                        if f'import {javax_package}' in content:
+                            content = content.replace(f'import {javax_package}', f'import {jakarta_package}')
+                            needs_fix = True
+                            print(f"[LocalRepo] 🔧 Fixed {javax_package} → {jakarta_package} in {relative_path}")
+                    
+                    # Apply the fix if needed
+                    if needs_fix:
+                        with open(file_path, 'w', encoding='utf-8') as f:
+                            f.write(content)
+                        
+                        # Track in regenerated_files
+                        regenerated_files[relative_path] = {
+                            "old_code": original_content,
+                            "changes": "Fixed javax.* to jakarta.* imports for Spring Boot 3.x compatibility",
+                            "updated_code": content
+                        }
+                        
+                        files_fixed += 1
+                        print(f"[LocalRepo] ✅ Fixed javax/jakarta migration in {relative_path}")
+                        
+                except Exception as e:
+                    print(f"[LocalRepo] ⚠️ Error processing {relative_path}: {e}")
+    
+    if files_fixed > 0:
+        print(f"[LocalRepo] 🎉 Preemptively fixed javax/jakarta migration in {files_fixed} Java files")
+    else:
+        print(f"[LocalRepo] ✅ No javax.* imports found - files already use jakarta.* correctly")
+    
+    return files_fixed
+
+def extract_maven_affected_files_from_error(build_error, maven_dir_path):
+    """Extract Java file paths mentioned in Maven build errors"""
+    affected_files = set()
+    
+    # Common patterns for Java file paths in Maven compile errors
+    file_patterns = [
+        r'\[ERROR\] ([a-zA-Z0-9_./\-]+\.java):\[\d+,\d+\]',  # Maven error format
+        r'([a-zA-Z0-9_./\-]+\.java):\d+:',                   # Compiler error format
+        r'symbol:\s+class\s+(\w+)',                          # Missing class
+        r'package\s+([a-zA-Z0-9_.]+)\s+does not exist',     # Missing package
+        r'cannot find symbol.*?(\w+)',                       # Cannot find symbol
+    ]
+    
+    for pattern in file_patterns:
+        matches = re.findall(pattern, build_error)
+        for match in matches:
+            # Handle different match types
+            if match.endswith('.java'):
+                file_path = match
+                # Convert to relative path from maven directory
+                if file_path.startswith('./') or file_path.startswith('../'):
+                    affected_files.add(file_path)
+                elif file_path.startswith('/'):
+                    # Absolute path - try to make it relative to maven dir
+                    try:
+                        rel_path = os.path.relpath(file_path, maven_dir_path)
+                        if not rel_path.startswith('..'):  # Only if it's within the maven dir
+                            affected_files.add(rel_path)
+                    except:
+                        pass
+                else:
+                    # Assume it's relative to maven root
+                    affected_files.add(file_path)
+    
+    # Filter to only files that actually exist
+    existing_files = []
+    for file_path in affected_files:
+        full_path = os.path.join(maven_dir_path, file_path)
+        if os.path.exists(full_path):
+            existing_files.append(file_path)
+    
+    return existing_files
+
+def analyze_gradle_build_error(gradle_error):
+    """
+    Analyze Gradle build error to classify the type and identify missing dependencies.
+    Returns a dict with error classification and suggested fixes.
+    """
+    error_analysis = {
+        "error_type": "unknown",
+        "missing_java_dependencies": [],
+        "missing_gradle_plugins": [],
+        "compilation_errors": [],
+        "configuration_errors": [],
+        "severity": "medium",
+        "suggested_action": "general_fix"
+    }
+    
+    error_lower = gradle_error.lower()
+    
+    # 1. Java Compilation Errors (highest priority)
+    java_compilation_patterns = [
+        (r'package ([a-zA-Z0-9_.]+) does not exist', 'missing_package'),
+        (r'cannot find symbol.*?class (\w+)', 'missing_class'),
+        (r'cannot find symbol.*?method (\w+)', 'missing_method'),
+        (r'cannot find symbol.*?variable (\w+)', 'missing_variable'),
+    ]
+    
+    for pattern, error_subtype in java_compilation_patterns:
+        matches = re.findall(pattern, gradle_error, re.IGNORECASE)
+        for match in matches:
+            error_analysis["compilation_errors"].append({
+                "type": error_subtype,
+                "missing_item": match,
+                "original_match": match
+            })
+    
+    # 2. Missing Java packages -> Gradle dependencies mapping
+    java_package_to_gradle_deps = {
+        'javax.validation': 'implementation "org.springframework.boot:spring-boot-starter-validation"',
+        'jakarta.validation': 'implementation "org.springframework.boot:spring-boot-starter-validation"',
+        'javax.persistence': 'implementation "org.springframework.boot:spring-boot-starter-data-jpa"',
+        'jakarta.persistence': 'implementation "org.springframework.boot:spring-boot-starter-data-jpa"',
+        'org.junit': 'testImplementation "org.springframework.boot:spring-boot-starter-test"',
+        'org.springframework.test': 'testImplementation "org.springframework.boot:spring-boot-starter-test"',
+        'com.fasterxml.jackson': 'implementation "org.springframework.boot:spring-boot-starter-json"',
+        'org.springframework.security': 'implementation "org.springframework.boot:spring-boot-starter-security"',
+        'org.springframework.data': 'implementation "org.springframework.boot:spring-boot-starter-data-jpa"',
+        'org.springframework.web': 'implementation "org.springframework.boot:spring-boot-starter-web"',
+        'org.springframework.http': 'implementation "org.springframework.boot:spring-boot-starter-web"'
+    }
+    
+    # 3. Special method/class missing patterns (e.g., Optional.orElseThrow)
+    missing_method_patterns = [
+        (r'cannot find symbol.*?method orElseThrow', 'java_version_issue'),
+        (r'cannot find symbol.*?method Optional', 'java_util_issue'),
+        (r'ResponseStatusException', 'spring_web_missing')
+    ]
+    
+    for pattern, issue_type in missing_method_patterns:
+        if re.search(pattern, gradle_error, re.IGNORECASE):
+            if issue_type == 'spring_web_missing':
+                spring_web_dep = 'implementation "org.springframework.boot:spring-boot-starter-web"'
+                if spring_web_dep not in error_analysis["missing_java_dependencies"]:
+                    error_analysis["missing_java_dependencies"].append(spring_web_dep)
+            elif issue_type in ['java_version_issue', 'java_util_issue']:
+                # These might be Java version compatibility issues
+                error_analysis["configuration_errors"].append(f"Java version compatibility issue: {issue_type}")
+    
+    # 4. Identify missing dependencies based on Java package errors
+    for compilation_error in error_analysis["compilation_errors"]:
+        if compilation_error["type"] == "missing_package":
+            missing_package = compilation_error["missing_item"]
+            for package_prefix, gradle_dep in java_package_to_gradle_deps.items():
+                if missing_package.startswith(package_prefix):
+                    if gradle_dep not in error_analysis["missing_java_dependencies"]:
+                        error_analysis["missing_java_dependencies"].append(gradle_dep)
+                    break
+    
+    # 5. Gradle Configuration Errors
+    gradle_config_patterns = [
+        'could not resolve dependencies',
+        'plugin not found',
+        'configuration problems',
+        'no such property',
+        'gradle version',
+        'build script error'
+    ]
+    
+    for pattern in gradle_config_patterns:
+        if pattern in error_lower:
+            error_analysis["configuration_errors"].append(pattern)
+    
+    # 6. Missing Gradle Plugins
+    plugin_patterns = [
+        (r"plugin with id '([^']+)' not found", "missing_plugin"),
+        (r"could not find plugin '([^']+)'", "missing_plugin"),
+    ]
+    
+    for pattern, error_subtype in plugin_patterns:
+        matches = re.findall(pattern, gradle_error, re.IGNORECASE)
+        for match in matches:
+            error_analysis["missing_gradle_plugins"].append(match)
+    
+    # 7. Determine error type and severity
+    if error_analysis["compilation_errors"]:
+        error_analysis["error_type"] = "java_compilation"
+        error_analysis["severity"] = "high"
+        if error_analysis["missing_java_dependencies"]:
+            error_analysis["suggested_action"] = "add_dependencies"
+        else:
+            error_analysis["suggested_action"] = "fix_java_code"
+    elif error_analysis["missing_gradle_plugins"]:
+        error_analysis["error_type"] = "gradle_plugin"
+        error_analysis["severity"] = "high"
+        error_analysis["suggested_action"] = "add_plugins"
+    elif error_analysis["configuration_errors"]:
+        error_analysis["error_type"] = "gradle_config"
+        error_analysis["severity"] = "medium"
+        error_analysis["suggested_action"] = "fix_gradle_config"
+    else:
+        error_analysis["error_type"] = "unknown"
+        error_analysis["severity"] = "medium"
+        error_analysis["suggested_action"] = "general_fix"
+    
+    return error_analysis
+
+async def fix_gradle_dependencies_targeted(gradle_content, missing_dependencies, gradle_file_path, pr_info):
+    """
+    Add specific missing dependencies to build.gradle with minimal changes.
+    This is more targeted than the general error correction.
+    """
+    if not missing_dependencies:
+        return None
+    
+    print(f"[LocalRepo] 🎯 Adding targeted dependencies: {missing_dependencies}")
+    
+    # Parse the current gradle file to find the dependencies block
+    lines = gradle_content.split('\n')
+    dependencies_start = -1
+    dependencies_end = -1
+    brace_count = 0
+    in_dependencies = False
+    existing_dependencies = set()
+    
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith('dependencies') and '{' in stripped:
+            dependencies_start = i
+            in_dependencies = True
+            brace_count = stripped.count('{') - stripped.count('}')
+        elif in_dependencies:
+            # Track existing dependencies to avoid duplicates
+            if any(dep_type in stripped for dep_type in ['implementation', 'testImplementation', 'compileOnly', 'runtimeOnly']):
+                existing_dependencies.add(stripped)
+            brace_count += line.count('{') - line.count('}')
+            if brace_count <= 0:
+                dependencies_end = i
+                break
+    
+    # Filter out dependencies that already exist
+    new_dependencies = []
+    for dep in missing_dependencies:
+        # Check if this dependency already exists (allowing for different formatting)
+        dep_artifact = dep.split('"')[1] if '"' in dep else dep.split("'")[1] if "'" in dep else dep
+        is_duplicate = any(dep_artifact in existing for existing in existing_dependencies)
+        if not is_duplicate:
+            new_dependencies.append(dep)
+        else:
+            print(f"[LocalRepo] ⚠️ Dependency already exists, skipping: {dep}")
+    
+    if not new_dependencies:
+        print(f"[LocalRepo] ℹ️ All required dependencies already present in build.gradle")
+        return gradle_content  # No changes needed
+    
+    if dependencies_start == -1:
+        # No dependencies block found, add one at the end
+        lines.append('')
+        lines.append('dependencies {')
+        for dep in new_dependencies:
+            lines.append(f'    {dep}')
+        lines.append('}')
+    else:
+        # Insert dependencies into existing block
+        insertion_point = dependencies_end if dependencies_end != -1 else len(lines)
+        for dep in reversed(new_dependencies):  # Reverse to maintain order
+            lines.insert(insertion_point, f'    {dep}')
+    
+    return '\n'.join(lines)
+
 async def fix_gradle_errors_with_web_search(gradle_content, gradle_error, gradle_file_path, pr_info):
     """
-    Use OpenAI with web search to fix Gradle build.gradle/build.gradle.kts based on build errors.
+    Enhanced Gradle error correction with intelligent error analysis and targeted fixes.
     Returns corrected gradle file content or None if correction fails.
     """
     if not OPENAI_CLIENT:
@@ -4816,8 +5985,56 @@ async def fix_gradle_errors_with_web_search(gradle_content, gradle_error, gradle
     if not pr_info:
         print("[LocalRepo] 🔧 No PR info available for web search Gradle error correction")
         return None
-    print(f"[LocalRepo] 🌐 Using OpenAI with web search to fix Gradle errors...")
-    web_search_prompt = f"""I'm getting Gradle build errors. Here's the exact error:\n\n{gradle_error}\n\nCurrent {gradle_file_path}:\n```gradle\n{gradle_content}\n```\n\nPlease search for the current information and help me fix these Gradle errors. I need:\n\n1. What are the current stable versions of the failing dependencies?\n2. How to fix dependency conflicts and version issues?\n3. What are the correct Gradle configurations for Spring Boot or Java?\n4. How to resolve compilation and plugin errors?\n5. Modern Gradle best practices and configurations\n\nPlease provide a corrected {gradle_file_path} with working dependencies and configurations."""
+    
+    # First, analyze the error to determine the best approach
+    error_analysis = analyze_gradle_build_error(gradle_error)
+    print(f"[LocalRepo] 🔍 Error analysis: {error_analysis['error_type']} (severity: {error_analysis['severity']})")
+    
+    # Try targeted dependency fix first for Java compilation errors
+    if (error_analysis["error_type"] == "java_compilation" and 
+        error_analysis["suggested_action"] == "add_dependencies" and
+        error_analysis["missing_java_dependencies"]):
+        
+        print(f"[LocalRepo] 🎯 Attempting targeted dependency fix for Java compilation errors")
+        targeted_fix = await fix_gradle_dependencies_targeted(
+            gradle_content, 
+            error_analysis["missing_java_dependencies"], 
+            gradle_file_path, 
+            pr_info
+        )
+        
+        if targeted_fix and targeted_fix.strip() != gradle_content.strip():
+            print(f"[LocalRepo] ✅ Applied targeted dependency additions")
+            return targeted_fix
+    
+    # Fall back to web search for complex errors
+    print(f"[LocalRepo] 🌐 Using OpenAI with web search for comprehensive Gradle error correction...")
+    
+    # Enhanced web search prompt with error analysis context
+    web_search_prompt = f"""I'm getting Gradle build errors. Here's the error analysis:
+
+ERROR TYPE: {error_analysis['error_type']}
+SEVERITY: {error_analysis['severity']}
+SUGGESTED ACTION: {error_analysis['suggested_action']}
+
+DETAILED ERROR:
+{gradle_error}
+
+Current {gradle_file_path}:
+```gradle
+{gradle_content}
+```
+
+Based on the error analysis, please search for current information and provide a targeted fix:
+
+1. If this is a Java compilation error due to missing packages, add the correct Spring Boot starter dependencies
+2. If this is a Gradle plugin error, add the missing plugins with correct syntax
+3. If this is a configuration error, fix the Gradle configuration issues
+4. Use current stable versions and modern Gradle best practices
+5. Make minimal changes - only fix what's actually broken
+
+Please provide a corrected {gradle_file_path} with targeted fixes."""
+
     try:
         response = await asyncio.to_thread(
             OPENAI_CLIENT.responses.create,
@@ -4859,7 +6076,3 @@ async def fix_gradle_errors_with_web_search(gradle_content, gradle_error, gradle
         print(f"[LocalRepo] ❌ Error during web search Gradle error correction: {e}")
         print("[LocalRepo] 🔄 Falling back to regular LLM correction...")
         return await fix_gradle_errors_with_llm(gradle_content, gradle_error, gradle_file_path, pr_info)
-
-async def fix_gradle_errors_with_llm(gradle_content, gradle_error, gradle_file_path, pr_info):
-    print(f"[LocalRepo] 🤖 (STUB) Would use LLM to fix Gradle errors for {gradle_file_path}")
-    return None
