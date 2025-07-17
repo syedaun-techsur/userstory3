@@ -7,10 +7,12 @@ This module implements intelligent code regeneration using:
 3. 🔄 Dynamic context caching for progressive refinement
 4. 🛠️ Intelligent error correction with web search feedback loops
 5. 📦 Smart package.json analysis with comprehensive dependency checking
+6. ⚙️ Config file optimization with package.json context for frontend projects
 
 Key Features:
 - Web search for current best practices, security patterns, and API changes
 - DEPENDENCY OPTIMIZATION: Only includes files that are actually imported/referenced
+- CONFIG FILE ENHANCEMENT: Config files in frontend projects automatically include package.json as context
 - Automatic fallback from web search to MCP when OpenAI is unavailable
 - Progressive context building where later files see refined versions of earlier files
 - Intelligent package.json dependency analysis with real-time version checking
@@ -20,9 +22,17 @@ Key Features:
 Context Optimization Strategy:
 - Regular files: Only get context from files they actually import/depend on
 - Package.json files: Get DEPENDENCY SUMMARY (lightweight context instead of all files)
+- Config files in frontend projects: Get package.json context + their own dependencies
 - External dependency tracking: Collects npm packages used across all files
 - Supports multiple languages: JS/TS, Python, CSS, HTML, and generic patterns
 - Dramatically reduces token usage while maintaining relevance
+
+Config File Support:
+- Automatically detects config files (tsconfig.json, vite.config.ts, eslint.config.js, etc.)
+- Identifies frontend projects by analyzing package.json dependencies
+- Config files in frontend projects receive package.json as additional context
+- Ensures config files can make optimal decisions based on available dependencies
+- Supports all major frontend frameworks: React, Vue, Angular, Next.js, Nuxt, etc.
 
 Web Search Integration:
 - Primary code generation uses OpenAI with web search when available
@@ -983,6 +993,19 @@ def parse_file_dependencies(file_path: str, file_content: str, pr_files: Set[str
             print(f"[Step3] 📦 pom.xml detected - no local dependencies to parse")
             return set()  # Empty set - handled separately with dependency summary
         
+        elif is_config_file(file_path):
+            # Special case: config files get their dependencies parsed normally
+            # but package.json will be added as context in fetch_dynamic_context
+            print(f"[Step3] ⚙️ Config file detected - parsing dependencies normally")
+            # Parse dependencies using the appropriate method based on file extension
+            if file_ext in ['js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs']:
+                dependencies.update(parse_js_ts_dependencies(file_content, file_dir, pr_files))
+            elif file_ext in ['json']:
+                # For JSON config files, look for references to other files
+                dependencies.update(parse_generic_dependencies(file_content, file_dir, pr_files))
+            else:
+                dependencies.update(parse_generic_dependencies(file_content, file_dir, pr_files))
+        
         elif file_ext in ['html', 'htm']:
             # HTML files (script tags, link tags)
             dependencies.update(parse_html_dependencies(file_content, file_dir, pr_files))
@@ -1170,6 +1193,7 @@ def fetch_dynamic_context(target_file: str, dynamic_context_cache: Dict[str, str
     """
     Fetch context using dynamic cache with DEPENDENCY-BASED filtering.
     Only includes files that the target file actually imports/depends on.
+    For config files in frontend projects, also includes package.json as context.
     """
     context = ""
     total_chars = 0
@@ -1194,7 +1218,19 @@ def fetch_dynamic_context(target_file: str, dynamic_context_cache: Dict[str, str
         print(f"[Step3] 📊 DEPENDENCY SUMMARY: {len(dependency_summary)} characters vs {total_chars:,} from all files")
         print(f"[Step3] 💡 Context optimization: Using dependency summary instead of all file contents")
         return dependency_summary
-    elif dependencies:
+    
+    # Check if this is a config file in a frontend project
+    is_config = is_config_file(target_file)
+    is_frontend = is_frontend_project(dynamic_context_cache)
+    
+    if is_config and is_frontend:
+        print(f"[Step3] ⚙️ Config file detected in frontend project - including package.json as context")
+        # Add package.json files to dependencies for config files
+        package_json_files = [f for f in pr_files if f.endswith('package.json')]
+        dependencies.update(package_json_files)
+        print(f"[Step3] 📦 Added {len(package_json_files)} package.json files to context for config file")
+    
+    if dependencies:
         relevant_files = dependencies
         print(f"[Step3] 🔗 Using {len(relevant_files)} dependency-based context files for {target_file}")
     else:
@@ -1267,7 +1303,10 @@ def fetch_dynamic_context(target_file: str, dynamic_context_cache: Dict[str, str
             print(f"[Step3] ⚠️ Warning: dependency {file_name} not found in dynamic cache")
     
     print(f"[Step3] 📊 DEPENDENCY-OPTIMIZED context summary for {target_file}:")
-    print(f"[Step3]   - Context strategy: {'ALL FILES (package.json)' if target_file.endswith('package.json') else 'DEPENDENCIES ONLY'}")
+    context_strategy = 'ALL FILES (package.json)' if target_file.endswith('package.json') else (
+        'CONFIG + PACKAGE.JSON' if is_config and is_frontend else 'DEPENDENCIES ONLY'
+    )
+    print(f"[Step3]   - Context strategy: {context_strategy}")
     print(f"[Step3]   - Total chars: {total_chars:,}")
     print(f"[Step3]   - Dependencies found: {len(dependencies) if not target_file.endswith('package.json') else len(pr_files) - 1}")
     print(f"[Step3]   - Refined files in context: {refined_files_count}")
@@ -1679,6 +1718,143 @@ def cleanup_extracted_code(updated_code: str) -> str:
     updated_code = re.sub(r'```\n$', '', updated_code)
     
     return updated_code
+
+def is_config_file(file_path: str) -> bool:
+    """
+    Identify if a file is a configuration file that should include package.json as context.
+    
+    Args:
+        file_path: Path of the target file
+    
+    Returns:
+        True if the file is a config file that should include package.json context
+    """
+    config_patterns = [
+        # TypeScript config files
+        r'tsconfig.*\.json$',
+        # Build tool config files
+        r'vite\.config\.(js|ts|jsx|tsx)$',
+        r'webpack\.config\.(js|ts|jsx|tsx)$',
+        r'rollup\.config\.(js|ts|jsx|tsx)$',
+        r'parcel\.config\.(js|ts|jsx|tsx)$',
+        # Linting and formatting config files
+        r'eslint\.config\.(js|ts|jsx|tsx)$',
+        r'eslintrc\.(js|ts|json|yaml|yml)$',
+        r'prettier\.config\.(js|ts|jsx|tsx)$',
+        r'prettierrc\.(js|ts|json|yaml|yml)$',
+        # Babel config files
+        r'babel\.config\.(js|ts|jsx|tsx|json)$',
+        r'\.babelrc(\.(js|ts|jsx|tsx|json|yaml|yml))?$',
+        # PostCSS config files
+        r'postcss\.config\.(js|ts|jsx|tsx|json)$',
+        # Tailwind config files
+        r'tailwind\.config\.(js|ts|jsx|tsx)$',
+        # Jest config files
+        r'jest\.config\.(js|ts|jsx|tsx|json)$',
+        # Storybook config files
+        r'\.storybook/.*\.(js|ts|jsx|tsx|json)$',
+        # Next.js config files
+        r'next\.config\.(js|ts|jsx|tsx)$',
+        # Nuxt config files
+        r'nuxt\.config\.(js|ts|jsx|tsx)$',
+        # Astro config files
+        r'astro\.config\.(js|ts|jsx|tsx|mjs)$',
+        # Svelte config files
+        r'svelte\.config\.(js|ts|jsx|tsx)$',
+        # Vue config files
+        r'vue\.config\.(js|ts|jsx|tsx)$',
+        # Angular config files
+        r'angular\.json$',
+        r'angular-cli\.json$',
+        # Other common config files
+        r'\.env(\.\w+)?$',
+        r'\.nvmrc$',
+        r'\.node-version$',
+        r'\.npmrc$',
+        r'\.yarnrc(\.yml)?$',
+        r'pnpm-workspace\.yaml$',
+        r'lerna\.json$',
+        r'workspace\.json$',
+        r'project\.json$',
+        r'package\.json$',  # package.json itself is also a config file
+    ]
+    
+    for pattern in config_patterns:
+        if re.match(pattern, file_path, re.IGNORECASE):
+            return True
+    
+    return False
+
+def is_frontend_project(dynamic_context_cache: Dict[str, str]) -> bool:
+    """
+    Determine if this is a frontend project by checking for package.json and frontend indicators.
+    
+    Args:
+        dynamic_context_cache: Cache of all files in the project
+    
+    Returns:
+        True if this appears to be a frontend project
+    """
+    # Check if package.json exists
+    package_json_files = [f for f in dynamic_context_cache.keys() if f.endswith('package.json')]
+    if not package_json_files:
+        return False
+    
+    # Check the first package.json for frontend indicators
+    for package_file in package_json_files:
+        try:
+            package_content = dynamic_context_cache[package_file]
+            package_data = json.loads(package_content)
+            
+            # Get all dependencies
+            dependencies = {}
+            dependencies.update(package_data.get('dependencies', {}))
+            dependencies.update(package_data.get('devDependencies', {}))
+            dependencies.update(package_data.get('peerDependencies', {}))
+            dependencies.update(package_data.get('optionalDependencies', {}))
+            
+            # Frontend framework indicators (more specific to avoid false positives)
+            frontend_indicators = [
+                'react', 'vue', 'angular', '@angular', 'next', 'nuxt', 'vite', 'webpack',
+                'rollup', 'parcel', 'astro', 'svelte', 'preact', 'solid', 'qwik',
+                '@vitejs', '@webpack', '@rollup', '@parcel', '@astro', '@svelte',
+                'tailwindcss', 'postcss', 'autoprefixer', 'babel', '@babel',
+                'eslint', 'prettier', 'vitest', 'cypress', 'playwright'
+            ]
+            
+            # Check for frontend frameworks first (strongest indicators)
+            frontend_frameworks = ['react', 'vue', 'angular', '@angular', 'next', 'nuxt', 'astro', 'svelte', 'preact', 'solid', 'qwik']
+            for framework in frontend_frameworks:
+                if any(framework in dep.lower() for dep in dependencies.keys()):
+                    return True
+            
+            # Check for frontend build tools (secondary indicators)
+            frontend_build_tools = ['vite', 'webpack', 'rollup', 'parcel', '@vitejs', '@webpack', '@rollup', '@parcel']
+            for tool in frontend_build_tools:
+                if any(tool in dep.lower() for dep in dependencies.keys()):
+                    return True
+            
+            # Check for frontend-specific styling tools
+            frontend_styling = ['tailwindcss', 'postcss', 'autoprefixer']
+            for styling in frontend_styling:
+                if any(styling in dep.lower() for dep in dependencies.keys()):
+                    return True
+            
+            # Check if any frontend indicators are present
+            for indicator in frontend_indicators:
+                if any(indicator in dep.lower() for dep in dependencies.keys()):
+                    return True
+            
+            # Check for build scripts that indicate frontend
+            scripts = package_data.get('scripts', {})
+            frontend_scripts = ['build', 'dev', 'start', 'serve', 'vite', 'webpack', 'rollup']
+            if any(script in str(scripts).lower() for script in frontend_scripts):
+                return True
+                
+        except (json.JSONDecodeError, KeyError):
+            continue
+    
+    return False
 
 async def process_single_file(session, file_name: str, old_code: str, requirements: str, pr_info: Optional[dict] = None, dynamic_context_cache: Optional[Dict[str, str]] = None, pr_files: Optional[Set[str]] = None, processed_files: Optional[Set[str]] = None) -> dict:
     """Process a single file through the AI refinement pipeline with dynamic context"""
@@ -2304,23 +2480,28 @@ async def regenerate_code_with_mcp(files: Dict[str, str], requirements: str, pr,
     total_files = len(files)
     current_file_number = 0
 
-    # Separate package.json files to process them last (for dependency analysis)
+    # Separate files by type for optimal processing order
     package_json_files = {}
+    config_files = {}
     regular_files = {}
     
     for file_name, file_content in files.items():
         if file_name.endswith('package.json'):
             package_json_files[file_name] = file_content
+        elif is_config_file(file_name):
+            config_files[file_name] = file_content
         else:
             regular_files[file_name] = file_content
     
-    # Create ordered processing list: regular files first, then package.json files
-    ordered_files = list(regular_files.items()) + list(package_json_files.items())
+    # Create ordered processing list: regular files first, then package.json files, then config files
+    # This ensures config files can benefit from refined package.json content
+    ordered_files = list(regular_files.items()) + list(package_json_files.items()) + list(config_files.items())
     
     print(f"[Step3] 📦 Processing order optimized for dependencies and context:")
     print(f"[Step3]   - Regular files first: {len(regular_files)} files (dependency-based context)")
-    print(f"[Step3]   - Package.json files last: {len(package_json_files)} files (full context)")
-    print(f"[Step3]   - This ensures package.json sees all refined dependencies for comprehensive analysis")
+    print(f"[Step3]   - Package.json files second: {len(package_json_files)} files (full context)")
+    print(f"[Step3]   - Config files last: {len(config_files)} files (config + package.json context)")
+    print(f"[Step3]   - This ensures config files see refined package.json for optimal configuration")
 
     try:
         async with stdio_client(server_params) as (read_stream, write_stream):
@@ -2331,10 +2512,13 @@ async def regenerate_code_with_mcp(files: Dict[str, str], requirements: str, pr,
                 for file_name, old_code in ordered_files:
                     current_file_number += 1
                     
-                    # Special indicator for package.json files
+                    # Special indicators for different file types
                     if file_name.endswith('package.json'):
                         print(f"[Step3] 📦 Processing PACKAGE.JSON {current_file_number}/{total_files}: {file_name}")
                         print(f"[Step3] 🔍 FULL CONTEXT MODE: AI will analyze all refined files for comprehensive dependency analysis")
+                    elif is_config_file(file_name):
+                        print(f"[Step3] ⚙️ Processing CONFIG FILE {current_file_number}/{total_files}: {file_name}")
+                        print(f"[Step3] 🔧 CONFIG + PACKAGE.JSON CONTEXT: Including package.json for optimal configuration")
                     else:
                         print(f"[Step3] 🎯 Processing file {current_file_number}/{total_files}: {file_name}")
                         print(f"[Step3] 🔗 DEPENDENCY-BASED CONTEXT: Only including relevant imported files")

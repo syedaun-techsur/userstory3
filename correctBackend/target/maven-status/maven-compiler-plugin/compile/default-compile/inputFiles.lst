@@ -1,0 +1,12 @@
+/Users/aunabbas/Documents/UserStory3/correctBackend/src/main/java/com/auth/config/SecurityConfig.java
+/Users/aunabbas/Documents/UserStory3/correctBackend/src/main/java/com/auth/controller/AuthController.java
+/Users/aunabbas/Documents/UserStory3/correctBackend/src/main/java/com/auth/entity/User.java
+/Users/aunabbas/Documents/UserStory3/correctBackend/src/main/java/com/auth/dto/LoginRequest.java
+/Users/aunabbas/Documents/UserStory3/correctBackend/src/main/java/com/auth/dto/LoginResponse.java
+/Users/aunabbas/Documents/UserStory3/correctBackend/src/main/java/com/auth/config/DataInitializer.java
+/Users/aunabbas/Documents/UserStory3/correctBackend/src/main/java/com/auth/service/AuthService.java
+/Users/aunabbas/Documents/UserStory3/correctBackend/src/main/java/com/auth/dto/ErrorResponse.java
+/Users/aunabbas/Documents/UserStory3/correctBackend/src/main/java/com/auth/dto/UserDto.java
+/Users/aunabbas/Documents/UserStory3/correctBackend/src/main/java/com/auth/repository/UserRepository.java
+/Users/aunabbas/Documents/UserStory3/correctBackend/src/main/java/com/auth/util/JwtUtil.java
+/Users/aunabbas/Documents/UserStory3/correctBackend/src/main/java/com/auth/AuthApplication.java
