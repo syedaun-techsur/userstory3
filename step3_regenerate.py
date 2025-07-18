@@ -6,29 +6,37 @@ This module implements intelligent code regeneration using:
 2. 🎯 DEPENDENCY-BASED CONTEXT optimization (only relevant imports)
 3. 🔄 Dynamic context caching for progressive refinement
 4. 🛠️ Intelligent error correction with web search feedback loops
-5. 📦 Smart package.json analysis with comprehensive dependency checking
+5. 📦 Smart package.json & pom.xml analysis with comprehensive dependency checking
 
 Key Features:
 - Web search for current best practices, security patterns, and API changes
 - DEPENDENCY OPTIMIZATION: Only includes files that are actually imported/referenced
 - Automatic fallback from web search to MCP when OpenAI is unavailable
 - Progressive context building where later files see refined versions of earlier files
-- Intelligent package.json dependency analysis with real-time version checking
+- Intelligent package.json & pom.xml dependency analysis with real-time version checking
 - Build error correction with web search for latest solutions
-- Local repository processing with npm install and build validation
+- Local repository processing with npm install/build and mvn clean install validation
+- Full-stack support: React/Frontend + Spring Boot/Backend projects
 
 Context Optimization Strategy:
 - Regular files: Only get context from files they actually import/depend on
 - Package.json files: Get DEPENDENCY SUMMARY (lightweight context instead of all files)
-- External dependency tracking: Collects npm packages used across all files
-- Supports multiple languages: JS/TS, Python, CSS, HTML, and generic patterns
+- Pom.xml files: Get DEPENDENCY SUMMARY (lightweight context for Maven dependencies)
+- External dependency tracking: Collects npm packages and Maven dependencies across all files
+- Supports multiple languages: JS/TS, Java, Python, CSS, HTML, and generic patterns
 - Dramatically reduces token usage while maintaining relevance
 
 Web Search Integration:
 - Primary code generation uses OpenAI with web search when available
 - All error correction flows use web search to find current solutions
-- Package.json files get comprehensive dependency analysis via web search
-- Build errors are resolved using latest documentation and patterns
+- Package.json & pom.xml files get comprehensive dependency analysis via web search
+- Build errors (npm build, mvn clean install) are resolved using latest documentation and patterns
+
+Full-Stack Project Support:
+- React/Frontend: npm install, npm build with intelligent error correction
+- Spring Boot/Backend: mvn clean install -DskipTests with intelligent error correction
+- Full-stack projects: Handles both React and Spring Boot components in same repository
+- Conservative approach: Only critical Maven functions added, existing React workflow unchanged
 """
 
 import re
@@ -41,7 +49,7 @@ from mcp import ClientSession
 from mcp.client.stdio import stdio_client
 from mcp import StdioServerParameters
 from dotenv import load_dotenv
-
+load_dotenv()
 # OpenAI for web search (code generation + error correction)
 try:
     import openai
@@ -69,7 +77,7 @@ except ImportError:
     print("❌ PyGithub not installed. Install with: pip install PyGithub")
     exit(1)
 
-load_dotenv()
+
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
 if not GITHUB_TOKEN:
@@ -87,7 +95,7 @@ EXTERNAL_DEPENDENCY_STORE = {}
 
 def extract_external_dependencies(file_path: str, file_content: str) -> Set[str]:
     """
-    Extract external dependencies (npm packages) from a file's import statements.
+    Extract external dependencies (npm packages, Maven dependencies) from a file's import statements.
     Returns set of package names (not local file paths).
     """
     external_deps = set()
@@ -101,6 +109,10 @@ def extract_external_dependencies(file_path: str, file_content: str) -> Set[str]
             external_deps.update(extract_python_external_dependencies(file_content))
         elif file_ext in ['json']:
             external_deps.update(extract_json_external_dependencies(file_content, file_path))
+        elif file_ext in ['java']:
+            external_deps.update(extract_java_external_dependencies(file_content))
+        elif file_path.endswith('pom.xml'):
+            external_deps.update(extract_maven_external_dependencies(file_content, file_path))
         # Add more languages as needed
         
     except Exception as e:
@@ -202,6 +214,60 @@ def extract_json_external_dependencies(content: str, file_path: str) -> Set[str]
     
     return external_deps
 
+def extract_java_external_dependencies(content: str) -> Set[str]:
+    """Extract external Maven dependencies from Java imports"""
+    external_deps = set()
+    
+    # Java import patterns
+    import_patterns = [
+        r'import\s+([a-zA-Z][a-zA-Z0-9_.]*\.[a-zA-Z][a-zA-Z0-9_]*(?:\.[a-zA-Z][a-zA-Z0-9_]*)*);',  # import com.example.package;
+        r'import\s+static\s+([a-zA-Z][a-zA-Z0-9_.]*\.[a-zA-Z][a-zA-Z0-9_]*(?:\.[a-zA-Z][a-zA-Z0-9_]*)*);',  # import static
+    ]
+    
+    for pattern in import_patterns:
+        matches = re.findall(pattern, content, re.MULTILINE)
+        for match in matches:
+            # Skip standard Java packages and common Spring Boot packages that don't need explicit dependencies
+            if (match.startswith('java.') or 
+                match.startswith('javax.') or
+                match.startswith('jakarta.')):
+                continue
+            
+            # Extract main package group (e.g., com.fasterxml.jackson -> jackson)
+            parts = match.split('.')
+            if len(parts) >= 3:
+                # Common Maven groupId patterns
+                if parts[0] == 'org' and len(parts) >= 3:
+                    package_name = f"{parts[0]}.{parts[1]}.{parts[2]}"
+                elif parts[0] == 'com' and len(parts) >= 3:
+                    package_name = f"{parts[0]}.{parts[1]}.{parts[2]}"
+                else:
+                    package_name = f"{parts[0]}.{parts[1]}"
+                
+                external_deps.add(package_name)
+    
+    return external_deps
+
+def extract_maven_external_dependencies(content: str, file_path: str) -> Set[str]:
+    """Extract dependencies from Maven pom.xml files"""
+    external_deps = set()
+    
+    try:
+        # Simple regex-based XML parsing for dependencies
+        if file_path.endswith('pom.xml'):
+            # Find all dependency blocks
+            dependency_pattern = r'<dependency>\s*<groupId>([^<]+)</groupId>\s*<artifactId>([^<]+)</artifactId>'
+            matches = re.findall(dependency_pattern, content, re.MULTILINE | re.DOTALL)
+            
+            for group_id, artifact_id in matches:
+                # Create a Maven coordinate-like identifier
+                external_deps.add(f"{group_id.strip()}:{artifact_id.strip()}")
+    
+    except Exception as e:
+        print(f"[Step3] ⚠️ Error extracting Maven dependencies from {file_path}: {e}")
+    
+    return external_deps
+
 def update_external_dependency_store(file_path: str, external_deps: Set[str]):
     """Update the global external dependency store with dependencies from a file"""
     if external_deps:
@@ -212,40 +278,62 @@ def update_external_dependency_store(file_path: str, external_deps: Set[str]):
 
 def get_dependency_summary_for_package_json() -> str:
     """
-    Generate a lightweight dependency summary for package.json files.
+    Generate a lightweight dependency summary for package.json and pom.xml files.
     Returns a summary of all external dependencies used across all files.
     """
     if not EXTERNAL_DEPENDENCY_STORE:
         return "No external dependencies found in project files."
     
-    # Aggregate all external dependencies
-    all_deps = set()
+    # Aggregate all external dependencies by type
+    npm_deps = set()
+    maven_deps = set()
+    python_deps = set()
     deps_by_file = {}
     
     for file_path, deps in EXTERNAL_DEPENDENCY_STORE.items():
-        all_deps.update(deps)
         if deps:  # Only include files that have dependencies
             deps_by_file[file_path] = sorted(deps)
+            
+            # Categorize dependencies by file type
+            if file_path.endswith(('.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs', '.json')):
+                npm_deps.update(deps)
+            elif file_path.endswith('.java') or file_path.endswith('pom.xml'):
+                maven_deps.update(deps)
+            elif file_path.endswith('.py'):
+                python_deps.update(deps)
+    
+    total_deps = len(npm_deps) + len(maven_deps) + len(python_deps)
     
     # Create summary
     summary = f"""
 EXTERNAL DEPENDENCY SUMMARY
 ===========================
 
-Total unique external packages used: {len(all_deps)}
-
-ALL EXTERNAL DEPENDENCIES:
-{', '.join(sorted(all_deps))}
-
-DEPENDENCIES BY FILE:
+Total unique external packages used: {total_deps}
+- NPM/JavaScript: {len(npm_deps)}
+- Maven/Java: {len(maven_deps)}
+- Python: {len(python_deps)}
 """
+    
+    if npm_deps:
+        summary += f"\nNPM/JAVASCRIPT DEPENDENCIES:\n{', '.join(sorted(npm_deps))}\n"
+    
+    if maven_deps:
+        summary += f"\nMAVEN/JAVA DEPENDENCIES:\n{', '.join(sorted(maven_deps))}\n"
+    
+    if python_deps:
+        summary += f"\nPYTHON DEPENDENCIES:\n{', '.join(sorted(python_deps))}\n"
+    
+    summary += "\nDEPENDENCIES BY FILE:\n"
     
     for file_path, deps in deps_by_file.items():
         summary += f"\n{file_path}:\n  - {', '.join(deps)}\n"
     
     summary += f"""
 DEPENDENCY ANALYSIS GUIDANCE:
-- Ensure all packages above are properly declared in package.json
+- NPM: Ensure all packages above are properly declared in package.json
+- Maven: Ensure all dependencies are properly declared in pom.xml
+- Python: Ensure all packages are properly declared in requirements.txt
 - Check for version conflicts between dependencies
 - Consider if any dependencies are missing or unused
 - Review if development dependencies are correctly categorized
@@ -3124,6 +3212,354 @@ Do not include any explanation, just the JSON array."""
     print(f"[LocalRepo] 🏗️ Build validation with error correction completed.")
     return overall_status
 
+def run_maven_clean_install_with_error_correction(pom_dir_path, pom_file, repo_path, regenerated_files, pr_info):
+    """
+    Run mvn clean install -DskipTests with intelligent error correction using LLM in a loop.
+    Keeps trying until success or max retries reached.
+    Returns True if successful, False otherwise.
+    """
+    pom_dir = os.path.dirname(pom_file) if os.path.dirname(pom_file) else "."
+    MAX_CORRECTION_ATTEMPTS = 10  # Maximum number of LLM correction attempts
+    
+    def attempt_maven_install():
+        """Helper function to attempt mvn clean install"""
+        try:
+            result = subprocess.run(
+                ["mvn", "clean", "install", "-DskipTests"],
+                cwd=pom_dir_path,
+                capture_output=True,
+                text=True,
+                timeout=600  # 10 minute timeout
+            )
+            return result
+        except subprocess.TimeoutExpired:
+            print(f"[LocalRepo] ❌ mvn clean install timed out after 10 minutes in {pom_dir}")
+            return None
+        except FileNotFoundError:
+            print("[LocalRepo] ❌ mvn not found. Please ensure Maven is installed and in PATH.")
+            return None
+        except Exception as e:
+            print(f"[LocalRepo] ❌ Error during mvn clean install in {pom_dir}: {e}")
+            return None
+
+    # Initial attempt
+    print(f"[LocalRepo] 📦 Attempting mvn clean install -DskipTests in {pom_dir_path}")
+    result = attempt_maven_install()
+    
+    if result is None:
+        return False
+    
+    if result.returncode == 0:
+        print(f"[LocalRepo] ✅ mvn clean install completed successfully in {pom_dir}")
+        return True
+    
+    # Start the correction loop
+    print(f"[LocalRepo] 🔄 Starting LLM error correction loop (max {MAX_CORRECTION_ATTEMPTS} attempts)...")
+    
+    original_pom_xml = None
+    correction_history = []  # Track all corrections applied
+    
+    for attempt in range(1, MAX_CORRECTION_ATTEMPTS + 1):
+        print(f"[LocalRepo] 🤖 LLM Correction Attempt {attempt}/{MAX_CORRECTION_ATTEMPTS}")
+        
+        # Check if result is valid before accessing attributes
+        if result is None:
+            print(f"[LocalRepo] ❌ mvn clean install attempt returned None (timeout/error)")
+            break
+            
+        print(f"[LocalRepo] ❌ mvn clean install failed with return code {result.returncode}")
+        print(f"[LocalRepo] 📄 Error output:")
+        print(f"[LocalRepo] stdout: {result.stdout}")
+        print(f"[LocalRepo] stderr: {result.stderr}")
+        
+        # Get current pom.xml content
+        pom_xml_path = os.path.join(pom_dir_path, "pom.xml")
+        try:
+            with open(pom_xml_path, "r", encoding="utf-8") as f:
+                current_pom_xml = f.read()
+                
+            # Store original on first correction attempt
+            if original_pom_xml is None:
+                original_pom_xml = current_pom_xml
+                
+        except Exception as e:
+            print(f"[LocalRepo] ❌ Could not read pom.xml for error correction: {e}")
+            return False
+        
+        # Combine error output for LLM analysis
+        full_error = f"STDOUT:\n{result.stdout}\n\nSTDERR:\n{result.stderr}"
+        
+        # Enhanced prompt with attempt context
+        correction_context = ""
+        if correction_history:
+            correction_context = f"\n\nPREVIOUS CORRECTIONS APPLIED:\n" + "\n".join([f"Attempt {i+1}: {corr}" for i, corr in enumerate(correction_history)])
+        
+        print(f"[LocalRepo] 🤖 Sending error to LLM for analysis...")
+        
+        # Always use web search for error correction
+        try:
+            corrected_pom_xml = asyncio.run(
+                fix_pom_xml_with_web_search(
+                    current_pom_xml, 
+                    full_error + correction_context, 
+                    pom_file, 
+                    pr_info
+                )
+            )
+        except Exception as e:
+            print(f"[LocalRepo] ❌ Error running LLM correction: {e}")
+            continue  # Try next iteration
+        
+        if not corrected_pom_xml:
+            print(f"[LocalRepo] ❌ LLM could not provide a valid correction for attempt {attempt}")
+            continue  # Try next iteration
+        
+        # Check if LLM made any actual changes
+        if corrected_pom_xml.strip() == current_pom_xml.strip():
+            print(f"[LocalRepo] ⚠️ LLM returned same pom.xml (no changes) - may be stuck")
+            continue  # Try next iteration
+        
+        # Write corrected pom.xml back to file
+        try:
+            with open(pom_xml_path, "w", encoding="utf-8") as f:
+                f.write(corrected_pom_xml)
+            print(f"[LocalRepo] ✅ Applied LLM correction attempt {attempt}")
+            
+            # Track this correction
+            correction_history.append(f"Fixed dependency issues in mvn clean install")
+            
+        except Exception as e:
+            print(f"[LocalRepo] ❌ Error writing corrected pom.xml: {e}")
+            continue  # Try next iteration
+        
+        # Retry mvn clean install with corrected pom.xml
+        print(f"[LocalRepo] 🔄 Retrying mvn clean install with LLM correction {attempt}...")
+        result = attempt_maven_install()
+        
+        if result is None:
+            continue  # Try next iteration
+        
+        if result.returncode == 0:
+            print(f"[LocalRepo] 🎉 mvn clean install succeeded after {attempt} LLM correction(s)!")
+            
+            # Update regenerated_files with the final corrected version
+            correction_summary = f"LLM-corrected pom.xml after {attempt} iteration(s) to fix mvn clean install failures"
+            regenerated_files[pom_file] = {
+                "old_code": original_pom_xml or current_pom_xml,
+                "changes": correction_summary,
+                "updated_code": corrected_pom_xml
+            }
+            
+            return True
+        
+        # If we get here, this correction didn't work, continue to next attempt
+        print(f"[LocalRepo] ⚠️ mvn clean install still failed after correction {attempt}, trying next iteration...")
+    
+    # All correction attempts exhausted
+    print(f"[LocalRepo] ❌ mvn clean install failed after {MAX_CORRECTION_ATTEMPTS} LLM correction attempts")
+    if result is not None:
+        print(f"[LocalRepo] 📄 Final error output:")
+        print(f"[LocalRepo] stdout: {result.stdout}")
+        print(f"[LocalRepo] stderr: {result.stderr}")
+    else:
+        print(f"[LocalRepo] 📄 Final attempt resulted in timeout/error (no output available)")
+    
+    # Store the final attempted correction even if it failed
+    if original_pom_xml and correction_history:
+        with open(os.path.join(pom_dir_path, "pom.xml"), "r", encoding="utf-8") as f:
+            final_pom_xml = f.read()
+        
+        correction_summary = f"LLM attempted {len(correction_history)} correction(s) but mvn clean install still failed"
+        regenerated_files[pom_file] = {
+            "old_code": original_pom_xml,
+            "changes": correction_summary,
+            "updated_code": final_pom_xml
+        }
+    
+    return False
+
+async def fix_pom_xml_with_web_search(pom_xml_content, maven_error, pom_file_path, pr_info):
+    """
+    Use OpenAI with web search to fix pom.xml based on mvn clean install errors.
+    This function uses web search to find current Maven versions and fix dependency conflicts.
+    Returns corrected pom.xml content or None if correction fails.
+    """
+    if not OPENAI_CLIENT:
+        print("[LocalRepo] ⚠️ OpenAI client not available - falling back to regular LLM")
+        return await fix_pom_xml_with_llm(pom_xml_content, maven_error, pom_file_path, pr_info)
+    
+    if not pr_info:
+        print("[LocalRepo] 🔧 No PR info available for web search error correction")
+        return None
+    
+    print(f"[LocalRepo] 🌐 Using OpenAI with web search to fix pom.xml errors...")
+    
+    # Create web search prompt for Maven errors
+    web_search_prompt = f"""I'm getting Maven clean install errors related to dependencies. Here's the exact error:
+
+{maven_error}
+
+Current pom.xml:
+```xml
+{pom_xml_content}
+```
+
+Please search for the current available versions of the failing Maven dependencies and help me fix the version constraints. I need:
+
+1. What are the current stable/LTS versions of the failing Maven dependencies?
+2. Which version ranges actually exist in Maven Central?
+3. How to fix dependency conflicts and version incompatibilities?
+4. Compatible Spring Boot and dependency versions that work together
+
+Please provide a corrected pom.xml with working version constraints based on what's currently available in Maven Central."""
+
+    try:
+        # Use OpenAI Responses API with web search
+        response = await asyncio.to_thread(
+            OPENAI_CLIENT.responses.create,
+            model="gpt-4.1-mini",
+            tools=[{"type": "web_search_preview"}],
+            input=web_search_prompt
+        )
+        
+        # Extract the response text from Responses API
+        if hasattr(response, 'output_text'):
+            response_text = response.output_text
+        else:
+            print("[LocalRepo] ❌ Could not extract response from OpenAI web search")
+            return None
+        
+        print(f"[LocalRepo] 🌐 Web search completed, analyzing response...")
+        
+        # Parse the corrected pom.xml from the response
+        patterns = [
+            # Pattern for explicit pom.xml mentions with XML
+            r'```xml\s*//\s*pom\.xml[^\n]*\n([\s\S]*?)```',
+            r'```xml\s*pom\.xml[^\n]*\n([\s\S]*?)```',
+            # Pattern for corrected/fixed pom.xml
+            r'(?:corrected|fixed|updated)\s+pom\.xml[:\s]*```xml\n([\s\S]*?)```',
+            # General XML code blocks that might be pom.xml
+            r'```xml\n([\s\S]*?)```',
+        ]
+        
+        for pattern in patterns:
+            matches = re.findall(pattern, response_text, re.IGNORECASE)
+            for match in matches:
+                # Basic validation - check if it looks like a pom.xml
+                if ('<project' in match and '<dependencies>' in match) or ('<groupId>' in match and '<artifactId>' in match):
+                    print(f"[LocalRepo] ✅ Web search provided pom.xml correction")
+                    return match.strip()
+        
+        print(f"[LocalRepo] ❌ Could not extract corrected pom.xml from web search response")
+        print(f"[LocalRepo] 🔄 Falling back to regular LLM correction...")
+        return await fix_pom_xml_with_llm(pom_xml_content, maven_error, pom_file_path, pr_info)
+            
+    except Exception as e:
+        print(f"[LocalRepo] ❌ Error during web search pom.xml correction: {e}")
+        print("[LocalRepo] 🔄 Falling back to regular LLM correction...")
+        return await fix_pom_xml_with_llm(pom_xml_content, maven_error, pom_file_path, pr_info)
+
+async def fix_pom_xml_with_llm(pom_xml_content, maven_error, pom_file_path, pr_info):
+    """
+    Use LLM to fix pom.xml based on mvn clean install errors.
+    Returns corrected pom.xml content or None if correction fails.
+    """
+    if not pr_info:
+        print("[LocalRepo] 🔧 No PR info available for LLM error correction")
+        return None
+    
+    print(f"[LocalRepo] 🤖 Using LLM to fix pom.xml errors...")
+    
+    # Create error correction prompt
+    error_correction_prompt = f"""You are an expert Maven dependency resolver. A mvn clean install -DskipTests failed with the following error:
+
+---
+MAVEN ERROR:
+{maven_error}
+---
+
+Current pom.xml content:
+```xml
+{pom_xml_content}
+```
+
+You are fixing pom.xml dependency issues. The most common Maven errors and their solutions:
+
+1. **"Could not find artifact"** - The specified version doesn't exist in Maven Central
+   - Solution: Use a version that actually exists in Maven Central
+   - Check Spring Boot compatibility matrices for compatible versions
+
+2. **"Dependency convergence error"** - Multiple versions of the same dependency
+   - Solution: Use <dependencyManagement> to enforce versions
+   - Exclude transitive dependencies causing conflicts
+
+3. **"Plugin execution failed"** - Maven plugin incompatibilities
+   - Solution: Use compatible plugin versions with your Maven/Java version
+
+4. **Java version incompatibilities**
+   - Solution: Ensure Java version matches Spring Boot requirements
+
+🔍 **CRITICAL INSTRUCTIONS:**
+1. READ the Maven error message VERY CAREFULLY to identify the exact problematic dependency
+2. For "Could not find artifact" errors: Use STABLE, EXISTING versions from Maven Central
+3. Use Spring Boot BOM (Bill of Materials) to manage compatible versions
+4. PRESERVE all functionality - don't remove dependencies unless truly unnecessary
+5. Use CONSERVATIVE version ranges - prefer explicit versions over ranges
+6. Keep XML structure clean and valid
+7. ONLY change the dependencies/versions that are causing the specific error
+
+⚠️ **VERSION CORRECTION RULES:**
+- Use Spring Boot BOM versions that are known to be stable (e.g., 2.7.x, 3.0.x, 3.1.x)
+- When in doubt, use LTS versions or well-established stable versions
+- Check dependency compatibility with Spring Boot version being used
+
+Return your response in this EXACT format:
+
+### Analysis:
+- Brief explanation of what was wrong and what you fixed
+
+### Fixed pom.xml:
+```xml
+<CORRECTED POM.XML CONTENT HERE>
+```
+
+IMPORTANT: Return ONLY the corrected pom.xml in the code block, not the original."""
+
+    try:
+        # Use the existing MCP infrastructure
+        server_params = StdioServerParameters(command="python", args=["server.py"])
+        
+        async with stdio_client(server_params) as (read_stream, write_stream):
+            async with ClientSession(read_stream, write_stream) as session:
+                await session.initialize()
+                
+                # Call LLM for error correction
+                result = await asyncio.wait_for(
+                    session.call_tool("codegen", arguments={"prompt": error_correction_prompt}),
+                    timeout=120  # 2 minute timeout for error correction
+                )
+                
+                # Extract response
+                response = extract_response_content(result, pom_file_path)
+                
+                # Parse the corrected pom.xml
+                corrected_xml = extract_updated_code(response)
+                if corrected_xml:
+                    # Basic validation - check if it looks like XML
+                    if '<project' in corrected_xml or '<dependencies>' in corrected_xml:
+                        print(f"[LocalRepo] ✅ LLM provided valid pom.xml correction")
+                        return corrected_xml
+                    else:
+                        print(f"[LocalRepo] ❌ LLM correction doesn't look like valid pom.xml")
+                        return None
+                else:
+                    print(f"[LocalRepo] ❌ Could not extract corrected pom.xml from LLM response")
+                    return None
+                    
+    except Exception as e:
+        print(f"[LocalRepo] ❌ Error during LLM pom.xml correction: {e}")
+        return None
+
 def process_pr_with_local_repo(pr_info, regenerated_files):
     """Clone PR branch, apply LLM changes, generate lockfile, and prepare for test generation"""
     
@@ -3184,6 +3620,11 @@ def process_pr_with_local_repo(pr_info, regenerated_files):
         package_json_files_list = [f for f in regenerated_files.keys() if f.endswith("package.json")]
         package_json_files_dict = {f: regenerated_files[f] for f in package_json_files_list}
         
+        # Check for Maven pom.xml files
+        pom_xml_files_list = [f for f in regenerated_files.keys() if f.endswith("pom.xml")]
+        pom_xml_files_dict = {f: regenerated_files[f] for f in pom_xml_files_list}
+        
+        # Process npm projects (React/Frontend)
         if package_json_files_list:
             print(f"[LocalRepo] package.json files detected: {package_json_files_list}")
             
@@ -3200,8 +3641,42 @@ def process_pr_with_local_repo(pr_info, regenerated_files):
                     package_dir_path, package_file, repo_path, regenerated_files, pr_info
                 )
         
+        # Process Maven projects (Spring Boot/Backend)
+        if pom_xml_files_list:
+            print(f"[LocalRepo] pom.xml files detected: {pom_xml_files_list}")
+            
+            # Process each pom.xml file
+            for pom_file in pom_xml_files_list:
+                # Get the directory containing the pom.xml
+                pom_dir = os.path.dirname(pom_file) if os.path.dirname(pom_file) else "."
+                pom_dir_path = os.path.join(repo_path, pom_dir)
+                
+                print(f"[LocalRepo] Running mvn clean install -DskipTests in directory: {pom_dir_path}")
+                
+                # Try Maven clean install with intelligent error correction
+                maven_success = run_maven_clean_install_with_error_correction(
+                    pom_dir_path, pom_file, repo_path, regenerated_files, pr_info
+                )
+        
         # Run npm build with error correction after all dependencies are resolved
-        build_status = run_npm_build_with_error_correction(repo_path, package_json_files_dict, regenerated_files, pr_info)
+        npm_build_status = "SKIPPED - No package.json files"
+        if package_json_files_dict:
+            npm_build_status = run_npm_build_with_error_correction(repo_path, package_json_files_dict, regenerated_files, pr_info)
+        
+        # Maven doesn't need separate build step as 'mvn clean install' already compiles
+        maven_build_status = "SKIPPED - No pom.xml files"
+        if pom_xml_files_dict:
+            maven_build_status = "COMPLETED - Maven clean install handles compilation"
+        
+        # Combine build statuses
+        if package_json_files_dict and pom_xml_files_dict:
+            build_status = f"NPM: {npm_build_status}, MAVEN: {maven_build_status}"
+        elif package_json_files_dict:
+            build_status = npm_build_status
+        elif pom_xml_files_dict:
+            build_status = maven_build_status
+        else:
+            build_status = "SKIPPED - No package.json or pom.xml files"
         
         # TODO: Future user story - Generate and run tests here
         # print("[LocalRepo] Preparing for test generation and execution...")
@@ -3217,15 +3692,21 @@ def process_pr_with_local_repo(pr_info, regenerated_files):
         print(f"[LocalRepo] 📊 Final summary:")
         print(f"[LocalRepo]   - Total files: {len(regenerated_files)}")
         print(f"[LocalRepo]   - Package.json files processed: {len(package_json_files_list)}")
+        print(f"[LocalRepo]   - Pom.xml files processed: {len(pom_xml_files_list)}")
         
         # Count LLM corrections with more detail
         llm_corrected_files = [f for f in regenerated_files.values() if 'LLM-corrected' in f.get('changes', '') or 'LLM attempted' in f.get('changes', '')]
-        successful_corrections = [f for f in llm_corrected_files if 'npm install still failed' not in f.get('changes', '')]
-        failed_corrections = [f for f in llm_corrected_files if 'npm install still failed' in f.get('changes', '')]
+        successful_npm_corrections = [f for f in llm_corrected_files if 'npm install still failed' not in f.get('changes', '') and 'package.json' in f.get('changes', '')]
+        failed_npm_corrections = [f for f in llm_corrected_files if 'npm install still failed' in f.get('changes', '')]
+        successful_maven_corrections = [f for f in llm_corrected_files if 'mvn clean install still failed' not in f.get('changes', '') and 'pom.xml' in f.get('changes', '')]
+        failed_maven_corrections = [f for f in llm_corrected_files if 'mvn clean install still failed' in f.get('changes', '')]
         
-        print(f"[LocalRepo]   - LLM successful corrections: {len(successful_corrections)}")
-        if failed_corrections:
-            print(f"[LocalRepo]   - LLM failed corrections: {len(failed_corrections)} (npm install still failed after multiple attempts)")
+        total_successful = len(successful_npm_corrections) + len(successful_maven_corrections)
+        total_failed = len(failed_npm_corrections) + len(failed_maven_corrections)
+        
+        print(f"[LocalRepo]   - LLM successful corrections: {total_successful} (NPM: {len(successful_npm_corrections)}, Maven: {len(successful_maven_corrections)})")
+        if total_failed > 0:
+            print(f"[LocalRepo]   - LLM failed corrections: {total_failed} (NPM: {len(failed_npm_corrections)}, Maven: {len(failed_maven_corrections)})")
         print(f"[LocalRepo]   - Build status: {build_status}")
         print(f"[LocalRepo] ✓ Workspace preserved at: {workspace_dir}")
         
@@ -3267,8 +3748,23 @@ def regenerate_files(pr_info):
     print(f"[Step3] 🏗️ Starting local processing with web search error correction...")
     regenerated_files = process_pr_with_local_repo(pr_info, regenerated_files)
     
+    # Detect project types for final summary
+    has_react = any(f.endswith('package.json') for f in regenerated_files.keys())
+    has_maven = any(f.endswith('pom.xml') for f in regenerated_files.keys())
+    
+    project_type = ""
+    if has_react and has_maven:
+        project_type = "Full-stack (React + Spring Boot)"
+    elif has_react:
+        project_type = "React/Frontend"
+    elif has_maven:
+        project_type = "Spring Boot/Backend"
+    else:
+        project_type = "General"
+    
     print(f"[Step3] ✅ Complete AI regeneration pipeline finished!")
     print(f"[Step3] 🌐 Web search status: {'ENABLED' if OPENAI_CLIENT else 'DISABLED (OpenAI not available)'}")
+    print(f"[Step3] 📊 Project type: {project_type}")
     print(f"[Step3] 📊 Files processed: {len(regenerated_files)}")
     
     return regenerated_files
