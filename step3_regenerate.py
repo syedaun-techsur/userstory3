@@ -1,36 +1,3 @@
-"""
-Step 3: AI Code Regeneration with Real-Time Web Search & Dependency Optimization
-
-This module implements intelligent code regeneration using:
-1. 🌐 REAL-TIME WEB SEARCH for latest practices and patterns
-2. 🎯 DEPENDENCY-BASED CONTEXT optimization (only relevant imports)
-3. 🔄 Dynamic context caching for progressive refinement
-4. 🛠️ Intelligent error correction with web search feedback loops
-5. 📦 Smart package.json analysis with comprehensive dependency checking
-
-Key Features:
-- Web search for current best practices, security patterns, and API changes
-- DEPENDENCY OPTIMIZATION: Only includes files that are actually imported/referenced
-- Automatic fallback from web search to MCP when OpenAI is unavailable
-- Progressive context building where later files see refined versions of earlier files
-- Intelligent package.json dependency analysis with real-time version checking
-- Build error correction with web search for latest solutions
-- Local repository processing with npm install and build validation
-
-Context Optimization Strategy:
-- Regular files: Only get context from files they actually import/depend on
-- Package.json files: Get DEPENDENCY SUMMARY (lightweight context instead of all files)
-- External dependency tracking: Collects npm packages used across all files
-- Supports multiple languages: JS/TS, Python, CSS, HTML, and generic patterns
-- Dramatically reduces token usage while maintaining relevance
-
-Web Search Integration:
-- Primary code generation uses OpenAI with web search when available
-- All error correction flows use web search to find current solutions
-- Package.json files get comprehensive dependency analysis via web search
-- Build errors are resolved using latest documentation and patterns
-"""
-
 import re
 import os
 import asyncio
@@ -41,7 +8,7 @@ from mcp import ClientSession
 from mcp.client.stdio import stdio_client
 from mcp import StdioServerParameters
 from dotenv import load_dotenv
-
+load_dotenv()
 # OpenAI for web search (code generation + error correction)
 try:
     import openai
@@ -69,7 +36,7 @@ except ImportError:
     print("❌ PyGithub not installed. Install with: pip install PyGithub")
     exit(1)
 
-load_dotenv()
+
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
 if not GITHUB_TOKEN:
@@ -97,8 +64,6 @@ def extract_external_dependencies(file_path: str, file_content: str) -> Set[str]
     try:
         if file_ext in ['js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs']:
             external_deps.update(extract_js_ts_external_dependencies(file_content))
-        elif file_ext in ['py']:
-            external_deps.update(extract_python_external_dependencies(file_content))
         elif file_ext in ['json']:
             external_deps.update(extract_json_external_dependencies(file_content, file_path))
         # Add more languages as needed
@@ -151,29 +116,7 @@ def extract_js_ts_external_dependencies(content: str) -> Set[str]:
     
     return external_deps
 
-def extract_python_external_dependencies(content: str) -> Set[str]:
-    """Extract external packages from Python imports"""
-    external_deps = set()
-    
-    # Python import patterns
-    import_patterns = [
-        r'from\s+([^\s.]+)\s+import',  # from package import
-        r'import\s+([^\s.,]+)',        # import package
-    ]
-    
-    for pattern in import_patterns:
-        matches = re.findall(pattern, content, re.MULTILINE)
-        for match in matches:
-            # Skip standard library and relative imports
-            if (match.startswith('.') or 
-                match in ['os', 'sys', 'json', 'typing', 'asyncio', 're', 'subprocess', 'datetime']):
-                continue
-            
-            # Extract main package name
-            package_name = match.split('.')[0]
-            external_deps.add(package_name)
-    
-    return external_deps
+
 
 def extract_json_external_dependencies(content: str, file_path: str) -> Set[str]:
     """Extract dependencies from JSON files like package.json"""
