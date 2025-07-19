@@ -4,10 +4,24 @@ import asyncio
 import json
 import subprocess
 from typing import Dict, Set, Optional
+
 from mcp import ClientSession
 from mcp.client.stdio import stdio_client
 from mcp import StdioServerParameters
 from dotenv import load_dotenv
+
+from extract_dependencies import (
+    extract_external_dependencies,
+    parse_file_dependencies,
+    
+    )
+from llm_response_extraction import (
+    extract_response_content,
+    extract_changes,
+    extract_updated_code,
+    cleanup_extracted_code
+    )
+
 load_dotenv()
 # OpenAI for web search (code generation + error correction)
 try:
@@ -99,169 +113,6 @@ def detect_project_types_in_repo(repo_path: str) -> Dict[str, str]:
     
     return project_types
 
-def extract_maven_external_dependencies(content: str) -> Set[str]:
-    """Extract external Maven dependencies from Java/Kotlin imports"""
-    external_deps = set()
-    
-    # Pattern to match import statements
-    import_patterns = [
-        # Java imports: import org.springframework.boot.SpringApplication;
-        r'import\s+([a-zA-Z_][a-zA-Z0-9_.]*);',
-        # Static imports: import static org.junit.jupiter.api.Assertions.*;
-        r'import\s+static\s+([a-zA-Z_][a-zA-Z0-9_.]*);',
-        # Package declarations: package com.example.demo;
-        r'package\s+([a-zA-Z_][a-zA-Z0-9_.]*);',
-    ]
-    
-    for pattern in import_patterns:
-        matches = re.findall(pattern, content, re.IGNORECASE | re.MULTILINE)
-        for match in matches:
-            # Skip java.* and javax.* (standard Java packages)
-            if match.startswith(('java.', 'javax.')):
-                continue
-            
-            # Extract the main package name (first two parts for common Maven dependencies)
-            parts = match.split('.')
-            if len(parts) >= 2:
-                # Common Maven dependency patterns
-                if parts[0] in ['org', 'com', 'io', 'net'] and len(parts) >= 3:
-                    package_name = f"{parts[0]}.{parts[1]}.{parts[2]}"
-                else:
-                    package_name = f"{parts[0]}.{parts[1]}"
-                external_deps.add(package_name)
-    
-    return external_deps
-
-def extract_pom_xml_external_dependencies(content: str, file_path: str) -> Set[str]:
-    """Extract dependencies from pom.xml files"""
-    external_deps = set()
-    
-    try:
-        # Simple regex-based extraction for pom.xml dependencies
-        # This is a conservative approach - only extract groupId:artifactId patterns
-        
-        # Pattern for dependencies section
-        dependency_patterns = [
-            # <groupId>org.springframework.boot</groupId>
-            # <artifactId>spring-boot-starter-web</artifactId>
-            r'<groupId>([^<]+)</groupId>\s*<artifactId>([^<]+)</artifactId>',
-            # <dependency>...</dependency> blocks
-            r'<dependency>.*?<groupId>([^<]+)</groupId>.*?<artifactId>([^<]+)</artifactId>.*?</dependency>',
-        ]
-        
-        for pattern in dependency_patterns:
-            matches = re.findall(pattern, content, re.IGNORECASE | re.DOTALL)
-            for match in matches:
-                if isinstance(match, tuple) and len(match) >= 2:
-                    group_id = match[0].strip()
-                    artifact_id = match[1].strip()
-                    dependency_name = f"{group_id}:{artifact_id}"
-                    external_deps.add(dependency_name)
-                elif isinstance(match, str):
-                    # Handle single group matches
-                    external_deps.add(match.strip())
-    
-    except Exception as e:
-        print(f"[Step3] ⚠️ Error extracting dependencies from {file_path}: {e}")
-    
-    return external_deps
-
-def extract_external_dependencies(file_path: str, file_content: str) -> Set[str]:
-    """
-    Extract external dependencies (npm packages or Maven dependencies) from a file's import statements.
-    Returns set of package names (not local file paths).
-    """
-    external_deps = set()
-    file_dir = os.path.dirname(file_path)
-    file_ext = file_path.split('.')[-1].lower()
-    
-    try:
-        if file_ext in ['js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs']:
-            external_deps.update(extract_js_ts_external_dependencies(file_content))
-        elif file_ext in ['json']:
-            external_deps.update(extract_json_external_dependencies(file_content, file_path))
-        elif file_ext in ['java', 'kt']:
-            external_deps.update(extract_maven_external_dependencies(file_content))
-        elif file_path.endswith('pom.xml'):
-            external_deps.update(extract_pom_xml_external_dependencies(file_content, file_path))
-        # Add more languages as needed
-        
-    except Exception as e:
-        print(f"[Step3] ⚠️ Error extracting external dependencies from {file_path}: {e}")
-    
-    return external_deps
-
-def extract_js_ts_external_dependencies(content: str) -> Set[str]:
-    """Extract external npm packages from JavaScript/TypeScript imports"""
-    external_deps = set()
-    
-    # Pattern to match import statements
-    import_patterns = [
-        # ES6 imports: import React from 'react'
-        r'import\s+.*?\s+from\s+[\'"`]([^\'"`]+)[\'"`]',
-        # Direct imports: import 'react'
-        r'import\s+[\'"`]([^\'"`]+)[\'"`]',
-        # Dynamic imports: import('react')
-        r'import\s*\(\s*[\'"`]([^\'"`]+)[\'"`]\s*\)',
-        # CommonJS require: require('react')
-        r'require\s*\(\s*[\'"`]([^\'"`]+)[\'"`]\s*\)',
-        # TypeScript imports: import type { } from 'react'
-        r'import\s+type\s+.*?\s+from\s+[\'"`]([^\'"`]+)[\'"`]',
-        # Re-exports: export * from 'react'
-        r'export\s+.*?\s+from\s+[\'"`]([^\'"`]+)[\'"`]',
-    ]
-    
-    for pattern in import_patterns:
-        matches = re.findall(pattern, content, re.IGNORECASE | re.MULTILINE)
-        for match in matches:
-            # Skip local/relative imports (start with ./ or ../)
-            if match.startswith(('./', '../', '/')):
-                continue
-            
-            # Extract package name (handle scoped packages like @types/node)
-            if match.startswith('@'):
-                # Scoped package: @types/node or @babel/core
-                parts = match.split('/')
-                if len(parts) >= 2:
-                    package_name = f"{parts[0]}/{parts[1]}"
-                else:
-                    package_name = parts[0]
-            else:
-                # Regular package: react, lodash, etc.
-                package_name = match.split('/')[0]
-            
-            external_deps.add(package_name)
-    
-    return external_deps
-
-
-
-def extract_json_external_dependencies(content: str, file_path: str) -> Set[str]:
-    """Extract dependencies from JSON files like package.json"""
-    external_deps = set()
-    
-    try:
-        data = json.loads(content)
-        
-        # For package.json files, extract dependencies
-        if file_path.endswith('package.json'):
-            for dep_type in ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']:
-                if dep_type in data:
-                    external_deps.update(data[dep_type].keys())
-        
-        # For tsconfig.json, extract @types packages
-        elif file_path.endswith('tsconfig.json'):
-            if 'compilerOptions' in data and 'types' in data['compilerOptions']:
-                for type_pkg in data['compilerOptions']['types']:
-                    if not type_pkg.startswith('@types/'):
-                        external_deps.add(f'@types/{type_pkg}')
-                    else:
-                        external_deps.add(type_pkg)
-    
-    except json.JSONDecodeError:
-        pass
-    
-    return external_deps
 
 def update_external_dependency_store(file_path: str, external_deps: Set[str]):
     """Update the global external dependency store with dependencies from a file"""
@@ -270,49 +121,6 @@ def update_external_dependency_store(file_path: str, external_deps: Set[str]):
         print(f"[Step3] 📦 Tracked {len(external_deps)} external dependencies from {file_path}: {sorted(external_deps)}")
     else:
         print(f"[Step3] 📦 No external dependencies found in {file_path}")
-
-def get_dependency_summary_for_package_json() -> str:
-    """
-    Generate a lightweight dependency summary for package.json files.
-    Returns a summary of all external dependencies used across all files.
-    """
-    if not EXTERNAL_DEPENDENCY_STORE:
-        return "No external dependencies found in project files."
-    
-    # Aggregate all external dependencies
-    all_deps = set()
-    deps_by_file = {}
-    
-    for file_path, deps in EXTERNAL_DEPENDENCY_STORE.items():
-        all_deps.update(deps)
-        if deps:  # Only include files that have dependencies
-            deps_by_file[file_path] = sorted(deps)
-    
-    # Create summary
-    summary = f"""
-EXTERNAL DEPENDENCY SUMMARY
-===========================
-
-Total unique external packages used: {len(all_deps)}
-
-ALL EXTERNAL DEPENDENCIES:
-{', '.join(sorted(all_deps))}
-
-DEPENDENCIES BY FILE:
-"""
-    
-    for file_path, deps in deps_by_file.items():
-        summary += f"\n{file_path}:\n  - {', '.join(deps)}\n"
-    
-    summary += f"""
-DEPENDENCY ANALYSIS GUIDANCE:
-- Ensure all packages above are properly declared in package.json
-- Check for version conflicts between dependencies
-- Consider if any dependencies are missing or unused
-- Review if development dependencies are correctly categorized
-"""
-    
-    return summary
 
 def get_pr_by_number(repo_name: str, pr_number: int):
     """Get PR by number using direct GitHub API"""
@@ -447,122 +255,7 @@ def collect_files_for_refinement(repo_name: str, pr_number: int, pr_info=None) -
         print(f"[DEBUG] Direct API failed: {e}")
         return {}
 
-def parse_file_dependencies(file_path: str, file_content: str, pr_files: Set[str]) -> Set[str]:
-    """
-    Parse a file's imports/dependencies and return the set of PR files it depends on.
-    
-    Args:
-        file_path: Path of the target file
-        file_content: Content of the target file
-        pr_files: Set of all files in the PR
-    
-    Returns:
-        Set of file paths from pr_files that this file depends on
-    """
-    dependencies = set()
-    file_dir = os.path.dirname(file_path)
-    
-    # Get file extension to determine parsing strategy
-    file_ext = file_path.split('.')[-1].lower()
-    
-    print(f"[Step3] 🔍 Parsing dependencies for {file_path} (type: {file_ext})")
-    
-    try:
-        if file_ext in ['js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs']:
-            # JavaScript/TypeScript files
-            dependencies.update(parse_js_ts_dependencies(file_content, file_dir, pr_files))
-        
-        elif file_ext in ['json'] and file_path.endswith('package.json'):
-            # Special case: package.json files don't have local dependencies
-            print(f"[Step3] 📦 package.json detected - no local dependencies to parse")
-            return set()  # Empty set - handled separately with dependency summary
-        
-    
-    except Exception as e:
-        print(f"[Step3] ⚠️ Error parsing dependencies for {file_path}: {e}")
-    
-    print(f"[Step3] 🔗 Found {len(dependencies)} dependencies for {file_path}: {list(dependencies)}")
-    return dependencies
 
-def parse_js_ts_dependencies(content: str, file_dir: str, pr_files: Set[str]) -> Set[str]:
-    """Parse JavaScript/TypeScript import statements"""
-    dependencies = set()
-    
-    # Common import patterns
-    import_patterns = [
-        # ES6 imports
-        r'import\s+.*?\s+from\s+[\'"`]([^\'"`]+)[\'"`]',
-        r'import\s+[\'"`]([^\'"`]+)[\'"`]',
-        # Dynamic imports
-        r'import\s*\(\s*[\'"`]([^\'"`]+)[\'"`]\s*\)',
-        # CommonJS require
-        r'require\s*\(\s*[\'"`]([^\'"`]+)[\'"`]\s*\)',
-        # TypeScript specific
-        r'import\s+type\s+.*?\s+from\s+[\'"`]([^\'"`]+)[\'"`]',
-        # Re-exports
-        r'export\s+.*?\s+from\s+[\'"`]([^\'"`]+)[\'"`]',
-        # JSX/TSX component imports in comments or strings
-        r'\/\/\s*@filename:\s*([^\s]+)',
-    ]
-    
-    for pattern in import_patterns:
-        matches = re.findall(pattern, content, re.IGNORECASE | re.MULTILINE)
-        for match in matches:
-            resolved_path = resolve_import_path(match, file_dir, pr_files)
-            if resolved_path:
-                dependencies.add(resolved_path)
-    
-    return dependencies
-
-def resolve_import_path(import_path: str, base_dir: str, pr_files: Set[str]) -> Optional[str]:
-    """
-    Resolve an import path to an actual file in the PR.
-    
-    Args:
-        import_path: The import path from the source code
-        base_dir: Directory of the importing file  
-        pr_files: Set of all files in the PR
-    
-    Returns:
-        Resolved file path if found in PR, None otherwise
-    """
-    # Skip external packages (node_modules, absolute URLs, etc.)
-    if (import_path.startswith(('http://', 'https://', '//', 'data:', '@', 'node_modules/')) or
-        not import_path.startswith(('./', '../', '/')) and '/' not in import_path):
-        return None
-    
-    # Normalize the import path
-    if import_path.startswith('./'):
-        # Relative to current directory
-        candidate_path = os.path.normpath(os.path.join(base_dir, import_path[2:]))
-    elif import_path.startswith('../'):
-        # Relative to parent directory
-        candidate_path = os.path.normpath(os.path.join(base_dir, import_path))
-    elif import_path.startswith('/'):
-        # Absolute path from project root
-        candidate_path = import_path[1:]  # Remove leading slash
-    else:
-        # Try both relative and absolute
-        candidate_path = os.path.normpath(os.path.join(base_dir, import_path))
-    
-    # Try different file extensions
-    extensions = ['', '.js', '.jsx', '.ts', '.tsx', '.json', '.css', '.scss', '.py', '.html', '.htm']
-    
-    for ext in extensions:
-        test_path = candidate_path + ext
-        if test_path in pr_files:
-            return test_path
-        
-        # Also try index files
-        index_path = os.path.join(candidate_path, 'index' + ext)
-        if index_path in pr_files:
-            return index_path
-    
-    # Try exact match
-    if candidate_path in pr_files:
-        return candidate_path
-    
-    return None
 
 def fetch_dynamic_context(target_file: str, dynamic_context_cache: Dict[str, str], pr_files: Set[str], processed_files: Optional[Set[str]] = None) -> str:
     """
@@ -588,10 +281,6 @@ def fetch_dynamic_context(target_file: str, dynamic_context_cache: Dict[str, str
     # Special case: package.json should see DEPENDENCY SUMMARY instead of all files
     if target_file.endswith('package.json'):
         print(f"[Step3] 📦 package.json detected - using DEPENDENCY SUMMARY for lightweight analysis")
-        dependency_summary = get_dependency_summary_for_package_json()
-        print(f"[Step3] 📊 DEPENDENCY SUMMARY: {len(dependency_summary)} characters vs {total_chars:,} from all files")
-        print(f"[Step3] 💡 Context optimization: Using dependency summary instead of all file contents")
-        return dependency_summary
     elif dependencies:
         relevant_files = dependencies
         print(f"[Step3] 🔗 Using {len(relevant_files)} dependency-based context files for {target_file}")
@@ -883,142 +572,6 @@ def compose_prompt(requirements: str, code: str, file_name: str, context: str) -
     )
     
     return base_prompt + dependency_instructions + format_instructions
-
-
-def extract_response_content(result, file_name: str) -> str:
-    """Extract text content from MCP response"""
-    if not (result.content and len(result.content) > 0):
-        print(f"[Step3] Warning: No content in response for {file_name}")
-        return ""
-    
-    content_item = result.content[0]
-    if hasattr(content_item, 'text') and hasattr(content_item, 'type') and content_item.type == "text":
-        return content_item.text.strip()
-    else:
-        print(f"[Step3] Warning: Unexpected content type for {file_name}")
-        return str(content_item)
-
-def extract_changes(response: str, file_name: str) -> str:
-    """Extract changes section from AI response and clean up URLs/citations"""
-    changes = ""
-    
-    # First try to find changes outside <think> block
-    changes_match = re.search(r"### Changes:\n([\s\S]*?)(?=\n```[a-zA-Z0-9]*\n|### Updated Code:|$)", response, re.IGNORECASE)
-    if changes_match:
-        changes = changes_match.group(1).strip()
-    else:
-        # If not found outside, look inside <think> block
-        think_match = re.search(r"<think>([\s\S]*?)</think>", response, re.IGNORECASE)
-        if think_match:
-            think_content = think_match.group(1)
-            changes_match = re.search(r"### Changes:\n([\s\S]*?)(?=\n```[a-zA-Z0-9]*\n|### Updated Code:|$)", think_content, re.IGNORECASE)
-            if changes_match:
-                changes = changes_match.group(1).strip()
-    
-    # Clean up if changes section contains code blocks
-    if changes and "```" in changes:
-        print(f"⚠️ WARNING: Code blocks found in changes section for {file_name}. Attempting to clean up...")
-        changes = re.sub(r'```[a-zA-Z0-9]*\n[\s\S]*?```', '', changes)
-        changes = re.sub(r'\n\s*\n', '\n', changes)  # Clean up extra newlines
-        changes = changes.strip()
-    
-    # Clean up URLs and citations from web search
-    if changes:
-        print(f"[Step3] 🧹 Cleaning up URLs and citations from changes for {file_name}...")
-        
-        # Remove URLs in parentheses with citations
-        # Pattern: ([domain.com](url)) or ([description](url))
-        changes = re.sub(r'\s*\(\[[^\]]+\]\([^)]+\)\)', '', changes)
-        
-        # Remove standalone URLs in parentheses
-        # Pattern: (https://example.com/...)
-        changes = re.sub(r'\s*\(https?://[^)]+\)', '', changes)
-        
-        # Remove bare URLs
-        changes = re.sub(r'https?://[^\s)]+', '', changes)
-        
-        # Remove citation patterns like ([source.com](url))
-        changes = re.sub(r'\s*\([^)]*\.com[^)]*\)', '', changes)
-        
-        # Remove utm_source parameters that might remain
-        changes = re.sub(r'[?&]utm_source=[^)\s]*', '', changes)
-        
-        # Clean up any double spaces or trailing periods from URL removal
-        changes = re.sub(r'\s{2,}', ' ', changes)  # Multiple spaces to single space
-        changes = re.sub(r'\s*\.\s*\n', '.\n', changes)  # Clean up trailing periods
-        changes = re.sub(r'\n\s*\n', '\n', changes)  # Clean up extra newlines
-        
-        # Clean up any remaining markdown artifacts
-        changes = re.sub(r'\[\]', '', changes)  # Empty markdown links
-        changes = re.sub(r'\(\)', '', changes)  # Empty parentheses
-        
-        changes = changes.strip()
-        
-        print(f"[Step3] ✅ Cleaned changes section for {file_name}")
-    
-    return changes
-
-def extract_updated_code(response: str) -> str:
-    """Extract updated code from AI response using multiple fallback patterns"""
-    # Pattern 1: Look for code specifically after "### Updated Code:" (most specific)
-    updated_code_match = re.search(r"### Updated Code:\s*\n```[a-zA-Z0-9]*\n([\s\S]*?)```", response, re.IGNORECASE)
-    if updated_code_match:
-        return updated_code_match.group(1).strip()
-    
-    # Pattern 2: If not found, look for code inside <think> block after "### Updated Code:"
-    think_match = re.search(r"<think>([\s\S]*?)</think>", response, re.IGNORECASE)
-    if think_match:
-        think_content = think_match.group(1)
-        updated_code_match = re.search(r"### Updated Code:\s*\n```[a-zA-Z0-9]*\n([\s\S]*?)```", think_content, re.IGNORECASE)
-        if updated_code_match:
-            return updated_code_match.group(1).strip()
-    
-    # Pattern 3: If still not found, look for any code block after "### Updated Code:" anywhere in response
-    updated_code_sections = re.findall(r"### Updated Code:\s*\n```[a-zA-Z0-9]*\n([\s\S]*?)```", response, re.IGNORECASE)
-    if updated_code_sections:
-        return updated_code_sections[-1].strip()  # Take the last occurrence
-    
-    # Pattern 4: Look for code blocks that come directly after changes section
-    changes_end = re.search(r"### Changes:\n([\s\S]*?)(?=\n```[a-zA-Z0-9]*\n|### Updated Code:|$)", response, re.IGNORECASE)
-    if changes_end:
-        after_changes = response[changes_end.end():]
-        code_blocks = re.findall(r"```[a-zA-Z0-9]*\n([\s\S]*?)```", after_changes)
-        if code_blocks:
-            return code_blocks[0].strip()
-    
-    # Pattern 5: Last resort - if multiple code blocks exist, take the last one
-    all_code_blocks = re.findall(r"```[a-zA-Z0-9]*\n([\s\S]*?)```", response)
-    if len(all_code_blocks) > 1:
-        return all_code_blocks[-1].strip()
-    elif len(all_code_blocks) == 1:
-        return all_code_blocks[0].strip()
-    
-    return ""
-
-def cleanup_extracted_code(updated_code: str) -> str:
-    """Clean up extracted code by removing unwanted artifacts"""
-    if not updated_code:
-        return updated_code
-    
-    # Remove any leading/trailing whitespace
-    updated_code = re.sub(r'^[\s\n]*', '', updated_code)
-    updated_code = re.sub(r'[\s\n]*$', '', updated_code)
-    
-    # Remove diff markers and extract only the REPLACE section
-    if '<<<<<<< SEARCH' in updated_code and '>>>>>>> REPLACE' in updated_code:
-        replace_match = re.search(r'=======\n(.*?)\n>>>>>>> REPLACE', updated_code, re.DOTALL)
-        if replace_match:
-            updated_code = replace_match.group(1).strip()
-    
-    # Remove any remaining diff markers
-    updated_code = re.sub(r'<<<<<<< SEARCH.*?=======\n', '', updated_code, flags=re.DOTALL)
-    updated_code = re.sub(r'\n>>>>>>> REPLACE.*', '', updated_code, flags=re.DOTALL)
-    
-    # Clean up any remaining artifacts
-    updated_code = re.sub(r'client/src/.*?\.js\n```javascript\n', '', updated_code)
-    updated_code = re.sub(r'```\n$', '', updated_code)
-    
-    return updated_code
 
 async def process_single_file_with_web_search(file_name: str, old_code: str, requirements: str, pr_info: Optional[dict] = None, dynamic_context_cache: Optional[Dict[str, str]] = None, pr_files: Optional[Set[str]] = None, processed_files: Optional[Set[str]] = None) -> dict:
     """Process a single file through AI refinement pipeline using OpenAI with web search for latest practices"""
@@ -1446,110 +999,6 @@ def get_persistent_workspace(repo_name, pr_branch, pr_number):
     
     return workspace_dir
 
-async def fix_package_json_with_llm(package_json_content, npm_error, package_file_path, pr_info):
-    """
-    Use LLM to fix package.json based on npm install errors.
-    Returns corrected package.json content or None if correction fails.
-    """
-    if not pr_info:
-        print("[LocalRepo] 🔧 No PR info available for LLM error correction")
-        return None
-    
-    print(f"[LocalRepo] 🤖 Using LLM to fix package.json errors...")
-    
-    # Create error correction prompt
-    error_correction_prompt = f"""You are an expert package.json dependency resolver. An npm install failed with the following error:
-
----
-NPM INSTALL ERROR:
-{npm_error}
----
-
-Current package.json content:
-```json
-{package_json_content}
-```
-
-You are fixing package.json dependency issues. The most common npm install errors and their solutions:
-
-1. **"No matching version found for package@version"** - The specified version doesn't exist
-   - Solution: Use a version that actually exists (e.g., ^15.0.0 instead of ^16.3.0)
-   - Check semver ranges carefully - use tilde (~) for patch updates, caret (^) for minor updates
-
-2. **"Package not found"** - Package name is wrong or deprecated
-   - Solution: Fix the package name or find an alternative
-
-3. **"Peer dependency warnings/conflicts"**
-   - Solution: Align versions between packages that depend on each other
-
-4. **"ETARGET" errors** - Version targeting issues
-   - Solution: Use exact versions or valid ranges that exist in npm registry
-
-🔍 **CRITICAL INSTRUCTIONS:**
-1. READ the npm error message VERY CAREFULLY to identify the exact problematic package and version
-2. For "No matching version found" errors: **ALWAYS LOWER the version number - NEVER GO UP!**
-   - ⚠️ **LOGIC**: If version 9.34 doesn't exist, then 9.35 (released later) also won't exist!
-   - ✅ **CORRECT**: If husky@^9.6.2 fails → try husky@^9.0.0 or husky@^8.0.0 (going DOWN)
-   - ✅ **CORRECT**: If lint-staged@^16.3.0 fails → try lint-staged@^15.0.0 or lint-staged@^14.0.0 (going DOWN)
-   - ❌ **NEVER DO**: If eslint@^9.34.0 fails → DON'T try eslint@^9.35.0 (that would be going UP!)
-   - 🎯 **STRATEGY**: Drop major/minor version significantly when a version doesn't exist
-3. PRESERVE all functionality - don't remove packages unless they're truly unnecessary
-4. Use CONSERVATIVE version ranges - better to be too low than too high
-5. Keep JSON structure clean and valid
-6. ONLY change the packages/versions that are causing the specific error
-
-⚠️ **VERSION CORRECTION RULES:**
-- If a version doesn't exist, ALWAYS try a LOWER version that is known to be stable
-- Use stable major versions (e.g., ^8.0.0, ^7.0.0) rather than bleeding edge
-- When in doubt, go back to LTS or well-established versions
-
-Return your response in this EXACT format:
-
-### Analysis:
-- Brief explanation of what was wrong and what you fixed
-
-### Fixed package.json:
-```json
-<CORRECTED PACKAGE.JSON CONTENT HERE>
-```
-
-IMPORTANT: Return ONLY the corrected package.json in the code block, not the original."""
-
-    try:
-        # Use the existing MCP infrastructure
-        server_params = StdioServerParameters(command="python", args=["server.py"])
-        
-        async with stdio_client(server_params) as (read_stream, write_stream):
-            async with ClientSession(read_stream, write_stream) as session:
-                await session.initialize()
-                
-                # Call LLM for error correction
-                result = await asyncio.wait_for(
-                    session.call_tool("codegen", arguments={"prompt": error_correction_prompt}),
-                    timeout=120  # 2 minute timeout for error correction
-                )
-                
-                # Extract response
-                response = extract_response_content(result, package_file_path)
-                
-                # Parse the corrected package.json
-                corrected_json = extract_updated_code(response)
-                if corrected_json:
-                    # Validate it's valid JSON
-                    try:
-                        json.loads(corrected_json)
-                        print(f"[LocalRepo] ✅ LLM provided valid package.json correction")
-                        return corrected_json
-                    except json.JSONDecodeError as e:
-                        print(f"[LocalRepo] ❌ LLM correction produced invalid JSON: {e}")
-                        return None
-                else:
-                    print(f"[LocalRepo] ❌ Could not extract corrected package.json from LLM response")
-                    return None
-                    
-    except Exception as e:
-        print(f"[LocalRepo] ❌ Error during LLM package.json correction: {e}")
-        return None
 
 async def fix_package_json_with_web_search(package_json_content, npm_error, package_file_path, pr_info):
     """
@@ -1559,7 +1008,7 @@ async def fix_package_json_with_web_search(package_json_content, npm_error, pack
     """
     if not OPENAI_CLIENT:
         print("[LocalRepo] ⚠️ OpenAI client not available - falling back to regular LLM")
-        return await fix_package_json_with_llm(package_json_content, npm_error, package_file_path, pr_info)
+        return None
     
     if not pr_info:
         print("[LocalRepo] 🔧 No PR info available for web search error correction")
@@ -1646,110 +1095,11 @@ Please provide a corrected package.json with working version constraints based o
             print(f"[LocalRepo] 🔍 Response preview: {response_text[:500]}...")
             # Fall back to regular LLM if web search didn't provide parseable results
             print("[LocalRepo] 🔄 Falling back to regular LLM correction...")
-            return await fix_package_json_with_llm(package_json_content, npm_error, package_file_path, pr_info)
+            return None
             
     except Exception as e:
         print(f"[LocalRepo] ❌ Error during web search package.json correction: {e}")
         print("[LocalRepo] 🔄 Falling back to regular LLM correction...")
-        return await fix_package_json_with_llm(package_json_content, npm_error, package_file_path, pr_info)
-
-async def fix_package_json_for_build_errors(package_json_content, build_error, package_dir_path, pr_info):
-    """
-    Use LLM to fix package.json based on build errors that indicate missing dependencies.
-    Returns corrected package.json content or None if correction fails.
-    """
-    if not pr_info:
-        print("[LocalRepo] 🔧 No PR info available for LLM package.json build error correction")
-        return None
-    
-    print(f"[LocalRepo] 🤖 Using LLM to fix package.json for build dependency errors...")
-    
-    # Create package.json correction prompt for build errors
-    build_error_package_prompt = f"""You are an expert package.json dependency resolver. A build failed with errors indicating missing dependencies:
-
----
-BUILD ERROR:
-{build_error}
----
-
-Current package.json content:
-```json
-{package_json_content}
-```
-
-🔍 **BUILD ERROR ANALYSIS:**
-The build errors indicate missing dependencies. Common patterns:
-1. **"Cannot find module 'package-name'"** - The package is missing from dependencies
-2. **"Cannot find module 'package-name' or its corresponding type declarations"** - Missing package AND its @types/* package
-3. **"Cannot find type definition file for 'node'"** - Missing @types/node in devDependencies
-
-📦 **DEPENDENCY PHILOSOPHY: More dependencies = More problems**
-- Only add dependencies that are ACTUALLY NEEDED based on the build errors
-- Do NOT add speculative dependencies
-- Be CONSERVATIVE - only fix what's broken
-
-🔧 **CRITICAL INSTRUCTIONS:**
-1. ANALYZE the build error to identify exactly which packages are missing
-2. ADD missing packages to the appropriate section:
-   - Runtime dependencies → "dependencies" 
-   - Type definitions → "devDependencies" (all @types/* packages)
-   - Development tools → "devDependencies"
-3. For missing type declarations, add both the package AND its @types/* if needed
-4. Use CONSERVATIVE versions - stable, well-tested versions
-5. Do NOT remove existing dependencies unless they're clearly wrong
-6. Keep JSON structure clean and valid
-
-**Examples of fixes:**
-- Error: "Cannot find module 'react-router-dom'" → Add "react-router-dom": "^6.8.0" to dependencies
-- Error: "Cannot find module 'react-router-dom' or its corresponding type declarations" → Add both the package AND "@types/react-router-dom" if needed
-- Error: "Cannot find type definition file for 'node'" → Add "@types/node": "^18.0.0" to devDependencies
-
-Return your response in this EXACT format:
-
-### Analysis:
-- Brief explanation of what dependencies were missing and what you added
-
-### Fixed package.json:
-```json
-<CORRECTED PACKAGE.JSON CONTENT HERE>
-```
-
-IMPORTANT: Return ONLY the corrected package.json in the code block, not the original."""
-
-    try:
-        # Use the existing MCP infrastructure
-        server_params = StdioServerParameters(command="python", args=["server.py"])
-        
-        async with stdio_client(server_params) as (read_stream, write_stream):
-            async with ClientSession(read_stream, write_stream) as session:
-                await session.initialize()
-                
-                # Call LLM for package.json correction based on build errors
-                result = await asyncio.wait_for(
-                    session.call_tool("codegen", arguments={"prompt": build_error_package_prompt}),
-                    timeout=120  # 2 minute timeout for package.json correction
-                )
-                
-                # Extract response
-                response = extract_response_content(result, "package_json_build_error_correction")
-                
-                # Parse the corrected package.json
-                corrected_json = extract_updated_code(response)
-                if corrected_json:
-                    # Validate it's valid JSON
-                    try:
-                        json.loads(corrected_json)
-                        print(f"[LocalRepo] ✅ LLM provided valid package.json correction for build errors")
-                        return corrected_json
-                    except json.JSONDecodeError as e:
-                        print(f"[LocalRepo] ❌ LLM correction produced invalid JSON: {e}")
-                        return None
-                else:
-                    print(f"[LocalRepo] ❌ Could not extract corrected package.json from LLM response")
-                    return None
-                    
-    except Exception as e:
-        print(f"[LocalRepo] ❌ Error during LLM package.json build error correction: {e}")
         return None
 
 async def fix_package_json_for_build_errors_with_web_search(package_json_content, build_error, package_dir_path, pr_info):
@@ -1760,7 +1110,7 @@ async def fix_package_json_for_build_errors_with_web_search(package_json_content
     """
     if not OPENAI_CLIENT:
         print("[LocalRepo] ⚠️ OpenAI client not available - falling back to regular LLM")
-        return await fix_package_json_for_build_errors(package_json_content, build_error, package_dir_path, pr_info)
+        return None
     
     if not pr_info:
         print("[LocalRepo] 🔧 No PR info available for web search build dependency correction")
@@ -1847,231 +1197,11 @@ Please provide a corrected package.json with the missing dependencies added base
             print(f"[LocalRepo] 🔍 Response preview: {response_text[:500]}...")
             # Fall back to regular LLM if web search didn't provide parseable results
             print("[LocalRepo] 🔄 Falling back to regular LLM correction...")
-            return await fix_package_json_for_build_errors(package_json_content, build_error, package_dir_path, pr_info)
+            return None
             
     except Exception as e:
         print(f"[LocalRepo] ❌ Error during web search package.json build dependency correction: {e}")
         print("[LocalRepo] 🔄 Falling back to regular LLM correction...")
-        return await fix_package_json_for_build_errors(package_json_content, build_error, package_dir_path, pr_info)
-
-async def fix_build_errors_with_llm(build_error, affected_files, package_dir_path, pr_info):
-    """
-    Use LLM to fix source code files based on npm build errors.
-    Returns dict of corrected files or None if correction fails.
-    """
-    if not pr_info:
-        print("[LocalRepo] 🔧 No PR info available for LLM build error correction")
-        return None
-    
-    print(f"[LocalRepo] 🤖 Using LLM to fix build errors...")
-    
-    # Analyze the build error to identify problematic files
-    affected_file_contents = {}
-    for file_path in affected_files:
-        full_path = os.path.join(package_dir_path, file_path)
-        if os.path.exists(full_path):
-            try:
-                with open(full_path, "r", encoding="utf-8") as f:
-                    affected_file_contents[file_path] = f.read()
-            except Exception as e:
-                print(f"[LocalRepo] ⚠️ Could not read {file_path}: {e}")
-                continue
-    
-    if not affected_file_contents:
-        print("[LocalRepo] ❌ No affected files could be read for build error correction")
-        return None
-    
-    # Create build error correction prompt
-    files_context = ""
-    for file_path, content in affected_file_contents.items():
-        files_context += f"\n\n--- {file_path} ---\n```\n{content}\n```"
-    
-    build_error_correction_prompt = f"""You are an expert TypeScript/JavaScript developer. A build failed with the following error:
-
----
-BUILD ERROR:
-{build_error}
----
-
-Affected files that need to be fixed:
-{files_context}
-
- 🚫 **COMMON BUILD ERRORS AND SOLUTIONS:**
-
- 1. **Unused Import Errors** (`'X' is declared but its value is never read`)
-    - Solution: Remove the unused import from the import statement
-    - Example: If `useEffect` is imported but not used, remove it from the React import
-
- 2. **Type-only Import Errors** (`'X' is a type and must be imported using a type-only import when 'verbatimModuleSyntax' is enabled`)
-    - Solution: Change regular imports to type-only imports for types
-    - Example: Change 'import {{ FormEvent }}' to 'import type {{ FormEvent }}'
-    - Only applies to TypeScript types, not runtime values
-
- 3. **Cannot find module errors** (`Cannot find module 'package-name'`)
-    - Solution: The dependency is missing from package.json or the import path is wrong
-    - Check if the module should be available and fix the import path
-
- 4. **TypeScript Configuration Errors** (tsconfig.json issues)
-    - **Unknown compiler option**: Remove unsupported options like `noUncheckedSideEffectImports`
-    - **Invalid target values**: Use valid ES targets like 'es2020', 'es2021', 'es2022', 'esnext'
-    - **Missing required options**: Add `"incremental": true` when using `tsBuildInfoFile`
-    - **Type definition errors**: Fix `types` array or add missing @types/* packages
-
- 5. **TypeScript type definition errors** (`Cannot find type definition file for 'node'`)
-    - Solution: Remove 'node' from types array if @types/node is not installed
-    - Or ensure @types/node is properly listed in package.json devDependencies
-
- 6. **File path errors** (incorrect relative/absolute paths)
-    - Solution: Fix the import paths to point to existing files
-    - Use correct case sensitivity
-
- 7. **JSX Extension Errors** (Parse error with JSX in .js files)
-    - Solution: Rename .js files containing JSX to .jsx extension
-    - Example: Rename `App.js` to `App.jsx` if it contains JSX syntax
-    - This is a common Vite/React issue where .js files with JSX need .jsx extension
-
-📦 **DEPENDENCY PHILOSOPHY: More dependencies = More problems**
-- Be EXTREMELY CONSERVATIVE about suggesting new dependencies
-- Try to fix errors by removing unused code rather than adding dependencies
-- Only suggest adding a dependency if it's absolutely essential
-- Prefer using existing, already-installed dependencies
-
-🔍 **CRITICAL INSTRUCTIONS:**
-1. ANALYZE the build error message carefully to identify the exact problem
-2. FIX only what's broken - don't make unnecessary changes
-3. REMOVE unused imports, variables, and functions causing warnings
-4. ENSURE all imports have corresponding available dependencies
-5. VERIFY file paths are correct and files exist
-6. Do NOT add new dependencies unless absolutely necessary
-7. Keep the functionality intact while fixing the build errors
-
-Return your response in this EXACT format:
-
-### Analysis:
-- Brief explanation of the build errors and how you fixed them
-
-### Fixed Files:
-For each file that needs changes, use this format:
-
- #### {file_path}
- ```
- <CORRECTED FILE CONTENT HERE>
- ```
-
-**IMPORTANT FILE RENAMING INSTRUCTIONS:**
-- If you suggest renaming a file (e.g., .js to .jsx), provide the new filename in the header
-- Example: `#### src/App.jsx` (instead of `#### src/App.js`)
-- The system will automatically handle the file rename operation
-- Make sure to mention the rename in your Analysis section
-
-IMPORTANT: 
-- Only include files that actually need changes
-- Return the complete corrected file content for each file
-- Do NOT suggest adding new dependencies unless absolutely essential
-- Focus on removing unused code rather than adding new code
-- If suggesting a file rename, use the new filename in the header"""
-
-    try:
-        # Use the existing MCP infrastructure
-        server_params = StdioServerParameters(command="python", args=["server.py"])
-        
-        async with stdio_client(server_params) as (read_stream, write_stream):
-            async with ClientSession(read_stream, write_stream) as session:
-                await session.initialize()
-                
-                # Call LLM for build error correction
-                result = await asyncio.wait_for(
-                    session.call_tool("codegen", arguments={"prompt": build_error_correction_prompt}),
-                    timeout=180  # 3 minute timeout for build error correction
-                )
-                
-                # Extract response
-                response = extract_response_content(result, "build_error_correction")
-                
-                # Parse the corrected files from the response
-                corrected_files = {}
-                
-                # Enhanced patterns to extract file corrections from various LLM response formats
-                patterns = [
-                    # Pattern 1: #### filename with code block (original format)
-                    r'#### ([^\n{]+)\n```[a-zA-Z0-9]*\n([\s\S]*?)```',
-                    # Pattern 2: Look for actual filenames (not placeholders) in the affected files
-                    r'#### (src/[^\n]+\.tsx?)\n```[a-zA-Z0-9]*\n([\s\S]*?)```',
-                    r'#### (src/[^\n]+\.jsx?)\n```[a-zA-Z0-9]*\n([\s\S]*?)```',
-                    r'#### ([^\n]+\.tsx?)\n```[a-zA-Z0-9]*\n([\s\S]*?)```',
-                    r'#### ([^\n]+\.jsx?)\n```[a-zA-Z0-9]*\n([\s\S]*?)```',
-                    # Pattern 3: ### Fixed Files: with actual file names
-                    r'### Fixed Files:[\s\S]*?#### (src/[^\n]+\.tsx?)\n```[a-zA-Z0-9]*\n([\s\S]*?)```',
-                    # Pattern 4: Direct code blocks after file mentions
-                    r'(src/[A-Za-z0-9_./\-]+\.tsx?)[\s\S]*?```[a-zA-Z0-9]*\n([\s\S]*?)```',
-                    # Pattern 5: Any TypeScript/JavaScript file followed by code
-                    r'([A-Za-z0-9_./\-]+\.(?:tsx?|jsx?))\s*:?\s*```[a-zA-Z0-9]*\n([\s\S]*?)```'
-                ]
-                
-                for i, pattern in enumerate(patterns):
-                    file_sections = re.findall(pattern, response, re.IGNORECASE)
-                    
-                    for file_path, file_content in file_sections:
-                        file_path = file_path.strip()
-                        file_content = file_content.strip()
-                        
-                        # Check if this file is one we're trying to fix
-                        if file_path in affected_file_contents:
-                            corrected_files[file_path] = file_content
-                            print(f"[LocalRepo] ✅ LLM provided correction for {file_path} (pattern {i+1})")
-                        elif any(file_path.endswith(af) for af in affected_files):
-                            # Handle case where path might be slightly different
-                            corrected_files[file_path] = file_content
-                            print(f"[LocalRepo] ✅ LLM provided correction for {file_path} (pattern {i+1}, matched by suffix)")
-                    
-                    if corrected_files:
-                        break  # Found files with this pattern, stop trying others
-                
-                if corrected_files:
-                    return corrected_files
-                else:
-                    # Enhanced debugging: try to understand what the LLM actually provided
-                    print(f"[LocalRepo] ❌ Could not extract corrected files from LLM response")
-                    print(f"[LocalRepo] 🔍 Looking for mentions of affected files in response...")
-                    
-                    for affected_file in affected_files:
-                        if affected_file in response:
-                            print(f"[LocalRepo] ✓ Found mention of {affected_file} in response")
-                        else:
-                            print(f"[LocalRepo] ✗ No mention of {affected_file} in response")
-                    
-                    # Look for any code blocks at all
-                    code_blocks = re.findall(r'```[a-zA-Z0-9]*\n([\s\S]*?)```', response)
-                    print(f"[LocalRepo] 🔍 Found {len(code_blocks)} code blocks in response")
-                    
-                    if code_blocks:
-                        print(f"[LocalRepo] 🔍 First code block preview: {code_blocks[0][:200]}...")
-                        
-                        # If there's exactly one code block and one affected file, try to match them
-                        if len(code_blocks) == 1 and len(affected_files) == 1:
-                            print(f"[LocalRepo] 🎯 Attempting to match single code block to single affected file")
-                            corrected_files[affected_files[0]] = code_blocks[0].strip()
-                            return corrected_files
-                    
-                    print(f"[LocalRepo] 🔍 Full response preview: {response[:1000]}...")
-                    
-                    # Special handling for JSX extension issues
-                    if 'jsx' in response.lower() or 'extension' in response.lower():
-                        print(f"[LocalRepo] 🔍 Detected JSX/extension suggestions in LLM response")
-                        for affected_file in affected_files:
-                            if affected_file.endswith('.js') and affected_file in affected_file_contents:
-                                new_file = affected_file.replace('.js', '.jsx')
-                                current_content = affected_file_contents[affected_file]
-                                converted_content = convert_commonjs_to_es_modules(current_content)
-                                corrected_files[new_file] = converted_content
-                                corrected_files[affected_file] = None  # Mark for removal
-                                print(f"[LocalRepo] ✅ LLM suggested rename: {affected_file} → {new_file}")
-                                return corrected_files
-                    
-                    return None
-                    
-    except Exception as e:
-        print(f"[LocalRepo] ❌ Error during LLM build error correction: {e}")
         return None
 
 async def fix_build_errors_with_web_search(build_error, affected_files, package_dir_path, pr_info):
@@ -2082,7 +1212,7 @@ async def fix_build_errors_with_web_search(build_error, affected_files, package_
     """
     if not OPENAI_CLIENT:
         print("[LocalRepo] ⚠️ OpenAI client not available - falling back to regular LLM")
-        return await fix_build_errors_with_llm(build_error, affected_files, package_dir_path, pr_info)
+        return None
     
     if not pr_info:
         print("[LocalRepo] 🔧 No PR info available for web search build error correction")
@@ -2207,12 +1337,12 @@ Please provide the corrected files with proper imports, exports, and syntax."""
             print(f"[LocalRepo] 🔍 Response preview: {response_text[:500]}...")
             # Fall back to regular LLM if web search didn't provide parseable results
             print("[LocalRepo] 🔄 Falling back to regular LLM correction...")
-            return await fix_build_errors_with_llm(build_error, affected_files, package_dir_path, pr_info)
+            return None
             
     except Exception as e:
         print(f"[LocalRepo] ❌ Error during web search build error correction: {e}")
         print("[LocalRepo] 🔄 Falling back to regular LLM correction...")
-        return await fix_build_errors_with_llm(build_error, affected_files, package_dir_path, pr_info)
+        return None
 
 def run_npm_install_with_error_correction(package_dir_path, package_file, repo_path, regenerated_files, pr_info):
     """
@@ -2491,7 +1621,7 @@ Do not include any explanation, just the JSON array."""
         try:
             if not OPENAI_CLIENT:
                 print(f"[LocalRepo] ⚠️ OpenAI not available for file identification, using fallback")
-                return extract_affected_files_from_error_fallback(build_error, package_dir_path)
+                return None
             
             # Use OpenAI to identify files
             response = await asyncio.to_thread(
@@ -2551,394 +1681,17 @@ Do not include any explanation, just the JSON array."""
                     return existing_files
                 else:
                     print(f"[LocalRepo] ❌ LLM response is not a valid array: {type(affected_files)}")
-                    return extract_affected_files_from_error_fallback(build_error, package_dir_path)
+                    return None
                     
             except json.JSONDecodeError as e:
                 print(f"[LocalRepo] ❌ Could not parse LLM response as JSON: {e}")
                 print(f"[LocalRepo] 🔍 Raw response: {response_text[:200]}...")
-                return extract_affected_files_from_error_fallback(build_error, package_dir_path)
+                return None
                 
         except Exception as e:
             print(f"[LocalRepo] ❌ Error with LLM file identification: {e}")
-            return extract_affected_files_from_error_fallback(build_error, package_dir_path)
+            return None
 
-    def extract_affected_files_from_error_fallback(build_error, package_dir_path):
-        """Fallback regex-based file extraction (enhanced patterns)"""
-        print(f"[LocalRepo] 🔄 Using fallback regex-based file identification...")
-        affected_files = set()
-        
-        # Enhanced patterns to catch more error formats
-        file_patterns = [
-            # Standard TypeScript/JavaScript errors
-            r'([a-zA-Z0-9_./\-]+\.(?:ts|tsx|js|jsx|vue|json))\(\d+,\d+\):',  
-            r'in ([a-zA-Z0-9_./\-]+\.(?:ts|tsx|js|jsx|vue|json))',           
-            r'([a-zA-Z0-9_./\-]+\.(?:ts|tsx|js|jsx|vue|json)):\d+:\d+',     
-            r"'([a-zA-Z0-9_./\-]+\.(?:ts|tsx|js|jsx|vue|json))'",
-            
-            # Enhanced patterns for build tool temporary files
-            r'from ([a-zA-Z0-9_./\-]+\.(?:ts|tsx|js|jsx|vue|json))\.timestamp',  # Vite timestamps
-            r'imported from ([a-zA-Z0-9_./\-]+\.(?:ts|tsx|js|jsx|vue|json))',     # Import errors
-            r'Cannot find module.*?([a-zA-Z0-9_./\-]+\.(?:ts|tsx|js|jsx|vue|json))', # Module not found
-            
-            # Config file patterns
-            r'config from ([a-zA-Z0-9_./\-]+\.(?:ts|js|json))',               # Config errors
-            r'([a-zA-Z0-9_./\-]*tsconfig[a-zA-Z0-9_./\-]*\.json)',           # TypeScript configs
-            r'([a-zA-Z0-9_./\-]*vite\.config\.(?:ts|js))',                   # Vite configs
-            r'([a-zA-Z0-9_./\-]*webpack\.config\.(?:ts|js))',                # Webpack configs
-        ]
-        
-        for pattern in file_patterns:
-            matches = re.findall(pattern, build_error, re.IGNORECASE)
-            for match in matches:
-                # Clean up the file path
-                file_path = match.strip()
-                
-                # Convert absolute paths to relative
-                if file_path.startswith('/'):
-                    try:
-                        rel_path = os.path.relpath(file_path, package_dir_path)
-                        if not rel_path.startswith('..'):
-                            affected_files.add(rel_path)
-                    except:
-                        pass
-                else:
-                    # Assume it's already relative
-                    affected_files.add(file_path)
-        
-        # Filter to only files that actually exist
-        existing_files = []
-        for file_path in affected_files:
-            full_path = os.path.join(package_dir_path, file_path)
-            if os.path.exists(full_path):
-                existing_files.append(file_path)
-        
-        return existing_files
-
-    def extract_affected_files_from_error(build_error, package_dir_path):
-        """Extract file paths mentioned in build errors"""
-        affected_files = set()
-        
-        # Common patterns for file paths in TypeScript/JavaScript build errors
-        file_patterns = [
-            r'([a-zA-Z0-9_./\-]+\.(?:ts|tsx|js|jsx|vue|json))\(\d+,\d+\):',  # TypeScript errors: file.ts(1,1): error
-            r'in ([a-zA-Z0-9_./\-]+\.(?:ts|tsx|js|jsx|vue|json))',           # Webpack/build errors: in src/file.ts
-            r'([a-zA-Z0-9_./\-]+\.(?:ts|tsx|js|jsx|vue|json)):\d+:\d+',     # ESLint style: file.ts:1:1
-            r"'([a-zA-Z0-9_./\-]+\.(?:ts|tsx|js|jsx|vue|json))'",           # Quoted file references
-        ]
-        
-        for pattern in file_patterns:
-            matches = re.findall(pattern, build_error)
-            for match in matches:
-                # Convert to relative path from package directory
-                if match.startswith('./') or match.startswith('../'):
-                    affected_files.add(match)
-                elif match.startswith('/'):
-                    # Absolute path - try to make it relative to package dir
-                    try:
-                        rel_path = os.path.relpath(match, package_dir_path)
-                        if not rel_path.startswith('..'):  # Only if it's within the package dir
-                            affected_files.add(rel_path)
-                    except:
-                        pass
-                else:
-                    # Assume it's relative to package root
-                    affected_files.add(match)
-        
-        # Filter to only files that actually exist
-        existing_files = []
-        for file_path in affected_files:
-            full_path = os.path.join(package_dir_path, file_path)
-            if os.path.exists(full_path):
-                existing_files.append(file_path)
-        
-        return existing_files
-    
-    for package_file in package_json_files.keys():
-        # Get the directory containing the package.json
-        package_dir = os.path.dirname(package_file) if os.path.dirname(package_file) else "."
-        package_dir_path = os.path.join(repo_path, package_dir)
-        
-        # Check if build script exists in package.json
-        package_json_path = os.path.join(package_dir_path, "package.json")
-        try:
-            with open(package_json_path, "r", encoding="utf-8") as f:
-                package_data = json.loads(f.read())
-                scripts = package_data.get("scripts", {})
-                
-                if "build" not in scripts:
-                    print(f"[LocalRepo] 🏗️ No 'build' script found in {package_file}, skipping")
-                    build_results.append(f"{package_file}: NO BUILD SCRIPT")
-                    continue
-        except Exception as e:
-            print(f"[LocalRepo] ❌ Error reading {package_file}: {e}")
-            build_results.append(f"{package_file}: READ ERROR")
-            continue
-        
-        print(f"[LocalRepo] 🏗️ Running 'npm run build' in directory: {package_dir_path}")
-        
-        # Initial build attempt
-        result = attempt_npm_build(package_dir_path)
-        
-        if result is None:
-            build_results.append(f"{package_file}: BUILD ERROR")
-            continue
-        
-        if result.returncode == 0:
-            print(f"[LocalRepo] ✅ npm run build completed successfully in {package_dir}")
-            build_results.append(f"{package_file}: SUCCESS")
-            
-            # Check if build generated artifacts (optional - just for logging)
-            build_dir = os.path.join(package_dir_path, "build")
-            dist_dir = os.path.join(package_dir_path, "dist")
-            if os.path.exists(build_dir):
-                print(f"[LocalRepo] 📁 Build artifacts generated in {package_dir}/build/")
-            elif os.path.exists(dist_dir):
-                print(f"[LocalRepo] 📁 Build artifacts generated in {package_dir}/dist/")
-            continue
-        
-        # Build failed - start correction loop
-        print(f"[LocalRepo] 🔄 Starting LLM build error correction loop (max {MAX_BUILD_CORRECTION_ATTEMPTS} attempts)...")
-        
-        correction_history = []  # Track all corrections applied
-        build_success = False
-        
-        for attempt in range(1, MAX_BUILD_CORRECTION_ATTEMPTS + 1):
-            print(f"[LocalRepo] 🤖 LLM Build Correction Attempt {attempt}/{MAX_BUILD_CORRECTION_ATTEMPTS}")
-            
-            if result is None:
-                print(f"[LocalRepo] ❌ npm run build failed (timeout/error)")
-                break
-                
-            print(f"[LocalRepo] ❌ npm run build failed with return code {result.returncode}")
-            print(f"[LocalRepo] 📄 Build error output:")
-            print(f"[LocalRepo] stdout: {result.stdout}")
-            print(f"[LocalRepo] stderr: {result.stderr}")
-            
-            # Combine error output for analysis
-            full_build_error = f"STDOUT:\n{result.stdout}\n\nSTDERR:\n{result.stderr}"
-            
-            # Check if this is a dependency-related build error
-            is_dependency_error = any(keyword in full_build_error.lower() for keyword in [
-                'cannot find module', 'module not found', 'missing dependency', 
-                'package not found', 'type declarations', 'cannot resolve'
-            ])
-            
-            if is_dependency_error:
-                print(f"[LocalRepo] 🔍 Detected dependency-related build error. Checking package.json...")
-                
-                # Try to fix package.json first for dependency errors
-                package_json_path = os.path.join(package_dir_path, "package.json") 
-                if os.path.exists(package_json_path):
-                    try:
-                        with open(package_json_path, "r", encoding="utf-8") as f:
-                            current_package_json = f.read()
-                        
-                        print(f"[LocalRepo] 🤖 Using LLM to fix package.json for dependency errors...")
-                        
-                        # Always use web search to fix package.json based on build dependency errors
-                        corrected_package_json = asyncio.run(
-                            fix_package_json_for_build_errors_with_web_search(
-                                current_package_json,
-                                full_build_error,
-                                package_dir_path,
-                                pr_info
-                            )
-                        )
-                        
-                        # Check if the corrected package.json is actually different
-                        if corrected_package_json:
-                            # Normalize both JSONs for comparison (parse and re-serialize to remove formatting differences)
-                            try:
-                                current_parsed = json.loads(current_package_json)
-                                corrected_parsed = json.loads(corrected_package_json)
-                                
-                                # Compare the actual JSON content, not just string representation
-                                if current_parsed != corrected_parsed:
-                                    # Write corrected package.json
-                                    with open(package_json_path, "w", encoding="utf-8") as f:
-                                        f.write(corrected_package_json)
-                                    
-                                    print(f"[LocalRepo] ✅ Updated package.json to fix dependency errors")
-                                    
-                                    # Update regenerated_files with the correction
-                                    relative_package_path = os.path.join(package_dir, "package.json") if package_dir != "." else "package.json"
-                                    regenerated_files[relative_package_path] = {
-                                        "old_code": current_package_json,
-                                        "changes": f"LLM-corrected package.json to fix build dependency errors (attempt {attempt})",
-                                        "updated_code": corrected_package_json
-                                    }
-                                    
-                                    # Run npm install again with the updated package.json
-                                    print(f"[LocalRepo] 📦 Running npm install after package.json update...")
-                                    npm_install_success = run_npm_install_with_error_correction(
-                                        package_dir_path, relative_package_path, repo_path, regenerated_files, pr_info
-                                    )
-                                    
-                                    if npm_install_success:
-                                        print(f"[LocalRepo] ✅ npm install succeeded after package.json update")
-                                        
-                                        # Retry build with updated dependencies
-                                        print(f"[LocalRepo] 🔄 Retrying npm run build after dependency update...")
-                                        result = attempt_npm_build(package_dir_path)
-                                        
-                                        if result is not None and result.returncode == 0:
-                                            print(f"[LocalRepo] 🎉 npm run build succeeded after fixing dependencies!")
-                                            build_results.append(f"{package_file}: SUCCESS (after dependency fix in attempt {attempt})")
-                                            build_success = True
-                                            break
-                                        else:
-                                            print(f"[LocalRepo] ⚠️ Build still failed after dependency fix, continuing with source code corrections...")
-                                    else:
-                                        print(f"[LocalRepo] ❌ npm install failed after package.json update")
-                                else:
-                                    print(f"[LocalRepo] ⚠️ Web search provided package.json but no meaningful changes detected")
-                            except json.JSONDecodeError as e:
-                                print(f"[LocalRepo] ❌ Error parsing JSON for comparison: {e}")
-                                print(f"[LocalRepo] ⚠️ LLM didn't provide valid package.json correction")
-                        else:
-                            print(f"[LocalRepo] ⚠️ LLM didn't change package.json or correction failed")
-                            
-                    except Exception as e:
-                        print(f"[LocalRepo] ❌ Error trying to fix package.json for dependency errors: {e}")
-            
-            # Extract affected files from the error message (for source code fixes)
-            try:
-                affected_files = asyncio.run(extract_affected_files_from_error_with_llm(full_build_error, package_dir_path, pr_info))
-            except Exception as e:
-                print(f"[LocalRepo] ❌ Error with LLM file identification, using fallback: {e}")
-                affected_files = extract_affected_files_from_error_fallback(full_build_error, package_dir_path)
-            
-            if not affected_files:
-                print(f"[LocalRepo] ⚠️ Could not identify specific files causing build errors")
-                # Try to guess common problematic files
-                common_files = [
-                    'tsconfig.json', 'tsconfig.app.json', 'tsconfig.node.json',  # TypeScript config files
-                    'src/App.tsx', 'src/App.ts', 'src/index.tsx', 'src/index.ts'  # Source files
-                ]
-                for common_file in common_files:
-                    if os.path.exists(os.path.join(package_dir_path, common_file)):
-                        affected_files.append(common_file)
-                        break
-            
-            if not affected_files:
-                print(f"[LocalRepo] ❌ No files found to correct, skipping LLM correction")
-                break
-            
-            print(f"[LocalRepo] 🎯 Identified affected files: {affected_files}")
-            
-            # Always use web search for build error correction
-            try:
-                corrected_files = asyncio.run(
-                    fix_build_errors_with_web_search(
-                        full_build_error,
-                        affected_files,
-                        package_dir_path,
-                        pr_info
-                    )
-                )
-            except Exception as e:
-                print(f"[LocalRepo] ❌ Error running LLM build correction: {e}")
-                continue  # Try next iteration
-            
-            if not corrected_files:
-                print(f"[LocalRepo] ❌ LLM could not provide valid corrections for attempt {attempt}")
-                continue  # Try next iteration
-            
-            # Apply corrections to files
-            files_changed = 0
-            for file_path, corrected_content in corrected_files.items():
-                full_file_path = os.path.join(package_dir_path, file_path)
-                try:
-                    # Read current content to check if LLM made changes
-                    with open(full_file_path, "r", encoding="utf-8") as f:
-                        current_content = f.read()
-                    
-                    if corrected_content.strip() == current_content.strip():
-                        print(f"[LocalRepo] ⚠️ LLM returned same content for {file_path} (no changes)")
-                        continue
-                    
-                    # Write corrected content
-                    with open(full_file_path, "w", encoding="utf-8") as f:
-                        f.write(corrected_content)
-                    
-                    # Update regenerated_files with the correction
-                    relative_file_path = os.path.join(package_dir, file_path) if package_dir != "." else file_path
-                    regenerated_files[relative_file_path] = {
-                        "old_code": current_content,
-                        "changes": f"LLM-corrected build errors (attempt {attempt})",
-                        "updated_code": corrected_content
-                    }
-                    
-                    files_changed += 1
-                    print(f"[LocalRepo] ✅ Applied LLM correction to {file_path}")
-                    
-                except Exception as e:
-                    print(f"[LocalRepo] ❌ Error writing corrected file {file_path}: {e}")
-                    continue
-            
-            if files_changed == 0:
-                print(f"[LocalRepo] ⚠️ No files were actually changed in attempt {attempt}")
-                continue
-            
-            # Track this correction
-            correction_history.append(f"Fixed {files_changed} files to resolve build errors")
-            
-            # Retry build with corrected files
-            print(f"[LocalRepo] 🔄 Retrying npm run build with LLM corrections {attempt}...")
-            result = attempt_npm_build(package_dir_path)
-            
-            if result is None:
-                continue  # Try next iteration
-            
-            if result.returncode == 0:
-                print(f"[LocalRepo] 🎉 npm run build succeeded after {attempt} LLM correction(s)!")
-                build_results.append(f"{package_file}: SUCCESS (after {attempt} corrections)")
-                build_success = True
-                break
-            
-            # If we get here, this correction didn't work, continue to next attempt
-            print(f"[LocalRepo] ⚠️ npm run build still failed after correction {attempt}, trying next iteration...")
-        
-        # Build loop completed
-        if not build_success:
-            print(f"[LocalRepo] ❌ npm run build failed after {MAX_BUILD_CORRECTION_ATTEMPTS} LLM correction attempts")
-            build_results.append(f"{package_file}: FAILED (after {len(correction_history)} corrections)")
-            if result is not None:
-                print(f"[LocalRepo] 📄 Final build error output:")
-                print(f"[LocalRepo] stdout: {result.stdout}")
-                print(f"[LocalRepo] stderr: {result.stderr}")
-    
-    # Determine overall build status
-    if not build_results:
-        overall_status = "NO BUILDS RUN"
-    elif all("SUCCESS" in result for result in build_results):
-        overall_status = "ALL BUILDS SUCCESSFUL"
-    elif any("SUCCESS" in result for result in build_results):
-        overall_status = "PARTIAL SUCCESS"
-    else:
-        overall_status = "ALL BUILDS FAILED"
-    
-    print(f"[LocalRepo] 🏗️ Build validation summary:")
-    for result in build_results:
-        print(f"[LocalRepo]   - {result}")
-    print(f"[LocalRepo] 🏗️ Overall build status: {overall_status}")
-    
-    # Add build status to regenerated_files metadata (for PR description)
-    build_summary = {
-        "status": overall_status,
-        "details": build_results,
-        "timestamp": "build_validation_with_correction_completed"
-    }
-    
-    # Store build info in a special metadata entry
-    regenerated_files["_build_validation_metadata"] = {
-        "old_code": "",
-        "changes": f"Build validation with LLM error correction: {overall_status}",
-        "updated_code": json.dumps(build_summary, indent=2)
-    }
-    
-    print(f"[LocalRepo] 🏗️ Build validation with error correction completed.")
-    return overall_status
 
 def process_pr_with_local_repo(pr_info, regenerated_files):
     """Clone PR branch, apply LLM changes, generate lockfile, and prepare for test generation"""
@@ -3045,7 +1798,7 @@ def process_pr_with_local_repo(pr_info, regenerated_files):
         
         if package_json_files_list:
             print(f"[LocalRepo] 🏗️ Running npm build validation for React projects...")
-            react_build_status = run_npm_build_with_error_correction(repo_path, package_json_files_dict, regenerated_files, pr_info)
+            react_build_status = fix_build_errors_with_web_search(repo_path, package_json_files_dict, regenerated_files, pr_info)
         
         
         # TODO: Future user story - Generate and run tests here
