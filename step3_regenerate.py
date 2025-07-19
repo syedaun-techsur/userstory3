@@ -41,7 +41,7 @@ from mcp import ClientSession
 from mcp.client.stdio import stdio_client
 from mcp import StdioServerParameters
 from dotenv import load_dotenv
-
+load_dotenv()
 # OpenAI for web search (code generation + error correction)
 try:
     import openai
@@ -69,7 +69,7 @@ except ImportError:
     print("❌ PyGithub not installed. Install with: pip install PyGithub")
     exit(1)
 
-load_dotenv()
+
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
 if not GITHUB_TOKEN:
@@ -2296,7 +2296,20 @@ async def fix_build_errors_with_web_search(build_error, affected_files, package_
     # Create build error correction prompt for web search
     files_context = ""
     for file_path, content in affected_file_contents.items():
-        files_context += f"\n\n--- {file_path} ---\n```json\n{content}\n```"
+        # Determine the correct file extension for the prompt
+        file_ext = file_path.split('.')[-1].lower()
+        if file_ext == 'js':
+            lang = 'javascript'
+        elif file_ext == 'ts':
+            lang = 'typescript'
+        elif file_ext == 'json':
+            lang = 'json'
+        elif file_ext == 'css':
+            lang = 'css'
+        else:
+            lang = 'text'
+        
+        files_context += f"\n\n--- {file_path} ---\n```{lang}\n{content}\n```"
     
     web_search_prompt = f"""I'm getting build errors and need help fixing them. Here are the exact errors:
 
@@ -2335,16 +2348,26 @@ Please provide the corrected files with proper imports, exports, and syntax."""
         # Parse the corrected files from the response
         corrected_files = {}
         
-        # Enhanced patterns for extracting TypeScript config files
+        # Enhanced patterns for extracting different file types
         patterns = [
+            # Pattern for JavaScript files with explicit filenames
+            r'```(?:javascript|js)\s*//\s*([^\n]*\.js)[^\n]*\n([\s\S]*?)```',
+            r'```(?:javascript|js)\s*([^\n]*\.js)[^\n]*\n([\s\S]*?)```',
+            # Pattern for TypeScript files with explicit filenames
+            r'```(?:typescript|ts)\s*//\s*([^\n]*\.ts)[^\n]*\n([\s\S]*?)```',
+            r'```(?:typescript|ts)\s*([^\n]*\.ts)[^\n]*\n([\s\S]*?)```',
             # Pattern for JSON config files with explicit filenames
             r'```json\s*//\s*([^\n]*\.json)[^\n]*\n([\s\S]*?)```',
             r'```json\s*([^\n]*\.json)[^\n]*\n([\s\S]*?)```',
             # Pattern for config files mentioned by name
             r'(tsconfig\.(?:app|node)?\.json)\s*[:\n]+\s*```[a-zA-Z0-9]*\n([\s\S]*?)```',
-            # Pattern for any JSON code block near mentions of config files
+            r'(postcss\.config\.js)\s*[:\n]+\s*```[a-zA-Z0-9]*\n([\s\S]*?)```',
+            # Pattern for any code block near mentions of config files
             r'(?:tsconfig\.(?:app|node)?\.json|TypeScript configuration)[\s\S]*?```json\n([\s\S]*?)```',
-            # Generic pattern for JSON blocks
+            r'(?:postcss\.config\.js|PostCSS configuration)[\s\S]*?```(?:javascript|js)\n([\s\S]*?)```',
+            # Generic patterns for different file types
+            r'```(?:javascript|js)\n([\s\S]*?)```',
+            r'```(?:typescript|ts)\n([\s\S]*?)```',
             r'```json\n([\s\S]*?)```'
         ]
         
@@ -2360,25 +2383,40 @@ Please provide the corrected files with proper imports, exports, and syntax."""
                     file_content = match if isinstance(match, str) else match[0]
                     file_content = file_content.strip()
                     # Try to guess which config file this is for
-                    if 'app' in file_content.lower() or '"app"' in file_content:
+                    if 'postcss' in file_content.lower() or 'tailwindcss' in file_content.lower() or 'autoprefixer' in file_content.lower():
+                        file_path = 'postcss.config.js'
+                    elif 'app' in file_content.lower() or '"app"' in file_content:
                         file_path = 'tsconfig.app.json'
                     elif 'node' in file_content.lower() or '"node"' in file_content:
                         file_path = 'tsconfig.node.json'
                     else:
                         file_path = 'tsconfig.json'
                 
-                # Validate JSON
-                try:
-                    json.loads(file_content)
-                    # Check if this file is one we're trying to fix
-                    if file_path in affected_file_contents:
-                        corrected_files[file_path] = file_content
-                        print(f"[LocalRepo] ✅ Web search provided correction for {file_path}")
-                    elif file_path in [f for f in affected_files]:
-                        corrected_files[file_path] = file_content
-                        print(f"[LocalRepo] ✅ Web search provided correction for {file_path}")
-                except json.JSONDecodeError:
-                    continue  # Skip invalid JSON
+                # Validate content based on file type
+                file_ext = file_path.split('.')[-1].lower()
+                is_valid = False
+                
+                if file_ext == 'json':
+                    # Validate JSON files
+                    try:
+                        json.loads(file_content)
+                        is_valid = True
+                    except json.JSONDecodeError:
+                        continue  # Skip invalid JSON
+                elif file_ext in ['js', 'ts', 'jsx', 'tsx']:
+                    # For JavaScript/TypeScript files, just check if it's not empty and has basic syntax
+                    if file_content.strip() and ('export' in file_content or 'module.exports' in file_content or 'import' in file_content or 'const' in file_content or 'function' in file_content):
+                        is_valid = True
+                    else:
+                        continue  # Skip if it doesn't look like valid JS/TS
+                else:
+                    # For other file types, just check if content is not empty
+                    is_valid = bool(file_content.strip())
+                
+                # Check if this file is one we're trying to fix
+                if is_valid and (file_path in affected_file_contents or file_path in [f for f in affected_files]):
+                    corrected_files[file_path] = file_content
+                    print(f"[LocalRepo] ✅ Web search provided correction for {file_path}")
             
             if corrected_files:
                 break  # Found files with this pattern, stop trying others
