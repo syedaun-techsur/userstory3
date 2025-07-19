@@ -774,18 +774,21 @@ def compose_prompt(requirements: str, code: str, file_name: str, context: str) -
     is_java_file = file_extension in ['java', 'kt']
 
     base_prompt = (
-        f"You are an expert AI code reviewer. Your job is to make ONLY ESSENTIAL corrections to the given file `{file_name}` "
-        f"to ensure it meets the basic requirements and is free of errors. DO NOT over-engineer or modernize unnecessarily.\n\n"
-        f"🚨 **CONSERVATIVE APPROACH REQUIRED:**\n"
-        f"- Only make changes that are NECESSARY to fix actual problems\n"
-        f"- Do NOT refactor working code unless it has clear issues\n"
-        f"- Do NOT add new features or capabilities\n"
-        f"- Do NOT modernize code that is already working\n"
-        f"- Focus on: syntax errors, missing imports, type issues, obvious bugs\n"
-        f"- Avoid: performance optimizations, pattern changes, style improvements\n\n"
+        f"You are an expert AI code reviewer. Your job is to improve the given file `{file_name}` "
+        f"by fixing errors and making meaningful improvements while avoiding unnecessary features or new libraries.\n\n"
+        f"🎯 **IMPROVEMENT-FOCUSED APPROACH:**\n"
+        f"- Fix all syntax errors, missing imports, type issues, and obvious bugs\n"
+        f"- Improve code quality, readability, and maintainability\n"
+        f"- Optimize performance where beneficial and safe\n"
+        f"- Apply modern patterns and best practices when appropriate\n"
+        f"- Refactor code for better structure and clarity\n"
+        f"- DO NOT add new features or capabilities beyond what's needed\n"
+        f"- DO NOT add new libraries unless absolutely necessary for fixes\n"
+        f"- Focus on: error fixes, code improvements, performance optimizations, better patterns\n"
+        f"- Avoid: adding unnecessary features, introducing new dependencies\n\n"
         f"REQUIREMENTS FROM PROJECT:\n{requirements}\n\n"
-        f"---\n Repository Context (other files for reference):\n{context}\n"
-        f"---\n Current Code ({file_name} - {file_extension} file):\n```{file_extension}\n{code}\n```\n"
+        f"---\nRepository Context (other files for reference):\n{context}\n"
+        f"---\nCurrent Code ({file_name} - {file_extension} file):\n```{file_extension}\n{code}\n```\n"
     )
 
     if is_package_json:
@@ -808,24 +811,28 @@ def compose_prompt(requirements: str, code: str, file_name: str, context: str) -
         )
     elif is_java_file:
         dependency_instructions = (
-            f"\n---\n🟤 CONSERVATIVE JAVA/KOTLIN HANDLING:\n"
-            f"For Java/Kotlin files, make ONLY essential corrections:\n\n"
-            f"1. **ONLY FIX ACTUAL ERRORS:**\n"
+            f"\n---\n🟤 **IMPROVEMENT-FOCUSED JAVA/KOTLIN HANDLING:**\n"
+            f"For Java/Kotlin files, make improvements and fix issues:\n\n"
+            f"1. **FIX ERRORS AND IMPROVE:**\n"
             f"   - Fix syntax errors, missing imports, or type issues\n"
             f"   - Remove unused imports or variables that cause warnings\n"
             f"   - Add missing imports for undefined classes\n"
-            f"   - Fix incorrect package or import statements\n\n"
-            f"2. **DO NOT MAKE THESE CHANGES:**\n"
-            f"   - Do NOT refactor or modernize code\n"
-            f"   - Do NOT add new methods, classes, or features\n"
-            f"   - Do NOT change code style or formatting unless it causes errors\n"
-            f"   - Do NOT update to new Java/Kotlin versions or APIs\n\n"
-            f"3. **PREVENT BUILD ERRORS (ESSENTIAL FIXES ONLY):**\n"
+            f"   - Fix incorrect package or import statements\n"
+            f"   - Improve code structure and readability\n"
+            f"   - Apply modern patterns and best practices\n\n"
+            f"2. **IMPROVEMENTS TO CONSIDER:**\n"
+            f"   - Refactor for better organization and clarity\n"
+            f"   - Improve error handling and edge cases\n"
+            f"   - Apply modern Java/Kotlin patterns when beneficial\n"
+            f"   - Optimize performance where appropriate\n"
+            f"   - Enhance type safety and validation\n\n"
+            f"3. **PREVENT BUILD ERRORS AND IMPROVE QUALITY:**\n"
             f"   - Remove unused imports that cause build warnings\n"
             f"   - Add missing imports for undefined classes\n"
             f"   - Fix type errors and obvious bugs\n"
-            f"   - Correct package or import statements if they're wrong\n\n"
-            f"🟤 PHILOSOPHY: If it's not broken, don't fix it. Be EXTREMELY CONSERVATIVE.\n"
+            f"   - Correct package or import statements if they're wrong\n"
+            f"   - Improve code maintainability and readability\n\n"
+            f"🟤 PHILOSOPHY: Fix errors and improve code quality while maintaining functionality\n"
         )
     else:
         dependency_instructions = (
@@ -1267,6 +1274,7 @@ def compose_web_search_prompt(requirements: str, code: str, file_name: str, cont
     )
     
     return base_prompt + web_search_instructions + dependency_instructions + format_instructions
+
 
 async def regenerate_code_with_mcp(files: Dict[str, str], requirements: str, pr, pr_info=None) -> Dict[str, Dict[str, str]]:
     """Main function to regenerate code using MCP with dynamic context updates"""
@@ -3180,24 +3188,165 @@ def run_mvn_install_with_error_correction(pom_dir_path, pom_file, repo_path, reg
             print(f"[LocalRepo] ❌ Error during mvn clean install: {e}")
             return None
     
-    async def extract_affected_java_files_from_error_with_llm(build_error, pom_dir_path, pr_info):
-        """
-        Use LLM to intelligently extract affected Java files from Maven build errors.
-        """
-        print(f"[LocalRepo] 🧠 Using INTELLIGENT LLM file identification for Maven build errors")
+    # Initial attempt
+    print(f"[LocalRepo] 📦 Attempting mvn clean install in {pom_dir_path}")
+    result = attempt_mvn_install()
+    
+    if result is None:
+        return False
+    
+    if result.returncode == 0:
+        print(f"[LocalRepo] ✅ mvn clean install completed successfully")
+        return True
+    
+    # Start the correction loop
+    print(f"[LocalRepo] 🔄 Starting LLM error correction loop (max {MAX_INSTALL_CORRECTION_ATTEMPTS} attempts)...")
+    
+    correction_history = []
+    
+    for attempt in range(1, MAX_INSTALL_CORRECTION_ATTEMPTS + 1):
+        print(f"[LocalRepo] 🤖 LLM Correction Attempt {attempt}/{MAX_INSTALL_CORRECTION_ATTEMPTS}")
         
-        # Get list of all Java files in the project for reference
-        all_files = []
+        # Check if result is valid before accessing attributes
+        if result is None:
+            print(f"[LocalRepo] ❌ mvn clean install attempt returned None (timeout/error)")
+            break
+            
+        print(f"[LocalRepo] ❌ mvn clean install failed with return code {result.returncode}")
+        print(f"[LocalRepo] 📄 Error output:")
+        print(f"[LocalRepo] stdout: {result.stdout}")
+        print(f"[LocalRepo] stderr: {result.stderr}")
+        
+        # Combine error output for LLM analysis
+        full_error = f"STDOUT:\n{result.stdout}\n\nSTDERR:\n{result.stderr}"
+        
+        # Enhanced prompt with attempt context
+        correction_context = ""
+        if correction_history:
+            correction_context = f"\n\nPREVIOUS CORRECTIONS APPLIED:\n" + "\n".join([f"Attempt {i+1}: {corr}" for i, corr in enumerate(correction_history)])
+        
+        print(f"[LocalRepo] 🤖 Extracting affected Java files from Maven error...")
+        
+        # Extract affected files using LLM
         try:
-            for root, dirs, files in os.walk(pom_dir_path):
-                for file in files:
-                    if file.endswith(('.java', '.kt', '.xml')):
-                        rel_path = os.path.relpath(os.path.join(root, file), pom_dir_path)
-                        all_files.append(rel_path)
+            affected_files = asyncio.run(
+                extract_affected_java_files_from_error_with_llm(
+                    full_error + correction_context, 
+                    pom_dir_path, 
+                    pr_info
+                )
+            )
         except Exception as e:
-            print(f"[LocalRepo] ⚠️ Error scanning directory: {e}")
+            print(f"[LocalRepo] ❌ Error extracting affected files: {e}")
+            continue  # Try next iteration
         
-        file_identification_prompt = f"""You are analyzing a Maven build error to identify which specific Java files need to be fixed. 
+        if not affected_files:
+            print(f"[LocalRepo] ❌ Could not identify affected Java files for attempt {attempt}")
+            continue  # Try next iteration
+        
+        print(f"[LocalRepo] 🤖 Fixing {len(affected_files)} Java files with LLM...")
+        
+        # Fix the affected files using LLM
+        try:
+            corrected_files = asyncio.run(
+                fix_java_build_errors_with_llm(
+                    full_error + correction_context,
+                    affected_files,
+                    pom_dir_path,
+                    pr_info
+                )
+            )
+        except Exception as e:
+            print(f"[LocalRepo] ❌ Error running LLM Java correction: {e}")
+            continue  # Try next iteration
+        
+        if not corrected_files:
+            print(f"[LocalRepo] ❌ LLM could not provide valid Java corrections for attempt {attempt}")
+            continue  # Try next iteration
+        
+        # Apply corrections to files
+        files_changed = 0
+        for file_path, corrected_content in corrected_files.items():
+            full_file_path = os.path.join(pom_dir_path, file_path)
+            try:
+                # Read current content to check if LLM made changes
+                with open(full_file_path, "r", encoding="utf-8") as f:
+                    current_content = f.read()
+                
+                if corrected_content.strip() == current_content.strip():
+                    print(f"[LocalRepo] ⚠️ LLM returned same content for {file_path} (no changes)")
+                    continue
+                
+                # Write corrected content
+                with open(full_file_path, "w", encoding="utf-8") as f:
+                    f.write(corrected_content)
+                
+                # Update regenerated_files with the correction
+                pom_dir = os.path.dirname(pom_file) if os.path.dirname(pom_file) else "."
+                relative_file_path = os.path.join(pom_dir, file_path) if pom_dir != "." else file_path
+                regenerated_files[relative_file_path] = {
+                    "old_code": current_content,
+                    "changes": f"LLM-corrected Java compilation errors (attempt {attempt})",
+                    "updated_code": corrected_content
+                }
+                
+                files_changed += 1
+                print(f"[LocalRepo] ✅ Applied LLM correction to {file_path}")
+                
+            except Exception as e:
+                print(f"[LocalRepo] ❌ Error writing corrected file {file_path}: {e}")
+                continue
+        
+        if files_changed == 0:
+            print(f"[LocalRepo] ⚠️ No files were actually changed in attempt {attempt}")
+            continue
+        
+        # Track this correction
+        correction_history.append(f"Fixed {files_changed} Java files to resolve compilation errors")
+        
+        # Retry mvn clean install with corrected files
+        print(f"[LocalRepo] 🔄 Retrying mvn clean install with LLM corrections {attempt}...")
+        result = attempt_mvn_install()
+        
+        if result is None:
+            continue  # Try next iteration
+        
+        if result.returncode == 0:
+            print(f"[LocalRepo] 🎉 mvn clean install succeeded after {attempt} LLM correction(s)!")
+            return True
+        
+        # If we get here, this correction didn't work, continue to next attempt
+        print(f"[LocalRepo] ⚠️ mvn clean install still failed after correction {attempt}, trying next iteration...")
+    
+    # All correction attempts exhausted
+    print(f"[LocalRepo] ❌ mvn clean install failed after {MAX_INSTALL_CORRECTION_ATTEMPTS} LLM correction attempts")
+    if result is not None:
+        print(f"[LocalRepo] 📄 Final error output:")
+        print(f"[LocalRepo] stdout: {result.stdout}")
+        print(f"[LocalRepo] stderr: {result.stderr}")
+    else:
+        print(f"[LocalRepo] 📄 Final attempt resulted in timeout/error (no output available)")
+    
+    return False
+
+async def extract_affected_java_files_from_error_with_llm(build_error, pom_dir_path, pr_info):
+    """
+    Use LLM to intelligently extract affected Java files from Maven build errors.
+    """
+    print(f"[LocalRepo] 🧠 Using INTELLIGENT LLM file identification for Maven build errors")
+    
+    # Get list of all Java files in the project for reference
+    all_files = []
+    try:
+        for root, dirs, files in os.walk(pom_dir_path):
+            for file in files:
+                if file.endswith(('.java', '.kt', '.xml')):
+                    rel_path = os.path.relpath(os.path.join(root, file), pom_dir_path)
+                    all_files.append(rel_path)
+    except Exception as e:
+        print(f"[LocalRepo] ⚠️ Error scanning directory: {e}")
+    
+    file_identification_prompt = f"""You are analyzing a Maven build error to identify which specific Java files need to be fixed. 
 
 BUILD ERROR:
 {build_error}
@@ -3219,362 +3368,67 @@ Return ONLY a JSON array of file paths, relative to the project root:
 
 Do not include any explanation, just the JSON array."""
 
-        try:
-            if not OPENAI_CLIENT:
-                print(f"[LocalRepo] ⚠️ OpenAI not available for file identification, using fallback")
-                return extract_affected_java_files_from_error_fallback(build_error, pom_dir_path)
-            
-            # Use OpenAI to identify files
-            response = await asyncio.to_thread(
-                OPENAI_CLIENT.chat.completions.create,
-                model="gpt-4.1-mini",
-                messages=[{"role": "user", "content": file_identification_prompt}],
-                temperature=0.1
-            )
-            
-            response_text = response.choices[0].message.content
-            if response_text:
-                response_text = response_text.strip()
-            else:
-                response_text = ""
-            print(f"[LocalRepo] 🤖 LLM response: {response_text}")
-            
-            # Parse the JSON response
-            try:
-                # Extract JSON from markdown code blocks or use raw response
-                json_content = None
-                
-                json_block_match = re.search(r'```json\s*\n?(.*?)```', response_text, re.DOTALL)
-                if json_block_match:
-                    json_content = json_block_match.group(1).strip()
-                elif '```' in response_text:
-                    code_block_match = re.search(r'```\s*\n?(.*?)```', response_text, re.DOTALL)
-                    if code_block_match:
-                        potential_json = code_block_match.group(1).strip()
-                        if potential_json.startswith('[') and potential_json.endswith(']'):
-                            json_content = potential_json
-                
-                if not json_content:
-                    json_content = response_text.strip()
-                
-                affected_files = json.loads(json_content)
-                
-                if isinstance(affected_files, list):
-                    # Filter to only files that actually exist
-                    existing_files = []
-                    for file_path in affected_files:
-                        full_path = os.path.join(pom_dir_path, file_path)
-                        if os.path.exists(full_path):
-                            existing_files.append(file_path)
-                        else:
-                            print(f"[LocalRepo] ⚠️ LLM suggested {file_path} but file doesn't exist")
-                    
-                    print(f"[LocalRepo] ✅ LLM identified {len(existing_files)} affected Java files: {existing_files}")
-                    return existing_files
-                else:
-                    print(f"[LocalRepo] ❌ LLM response is not a valid array: {type(affected_files)}")
-                    return extract_affected_java_files_from_error_fallback(build_error, pom_dir_path)
-                    
-            except json.JSONDecodeError as e:
-                print(f"[LocalRepo] ❌ Could not parse LLM response as JSON: {e}")
-                return extract_affected_java_files_from_error_fallback(build_error, pom_dir_path)
-                
-        except Exception as e:
-            print(f"[LocalRepo] ❌ Error with LLM file identification: {e}")
-            return extract_affected_java_files_from_error_fallback(build_error, pom_dir_path)
-
-    def extract_affected_java_files_from_error_fallback(build_error, pom_dir_path):
-        """Fallback regex-based Java file extraction"""
-        print(f"[LocalRepo] 🔄 Using fallback regex-based Java file identification...")
-        affected_files = set()
-        
-        # Patterns to catch Java compilation errors
-        file_patterns = [
-            # Java compilation errors
-            r'([a-zA-Z0-9_./\-]+\.java)\(\d+\):',  
-            r'in ([a-zA-Z0-9_./\-]+\.java)',           
-            r'([a-zA-Z0-9_./\-]+\.java):\d+:\d+',     
-            r"'([a-zA-Z0-9_./\-]+\.java)'",
-            r'"([a-zA-Z0-9_./\-]+\.java)"',
-            
-            # Kotlin compilation errors
-            r'([a-zA-Z0-9_./\-]+\.kt)\(\d+\):',  
-            r'in ([a-zA-Z0-9_./\-]+\.kt)',           
-            r'([a-zA-Z0-9_./\-]+\.kt):\d+:\d+',     
-            r"'([a-zA-Z0-9_./\-]+\.kt)'",
-            r'"([a-zA-Z0-9_./\-]+\.kt)"',
-        ]
-        
-        for pattern in file_patterns:
-            matches = re.findall(pattern, build_error, re.IGNORECASE)
-            for match in matches:
-                file_path = match.strip()
-                
-                # Convert absolute paths to relative
-                if file_path.startswith('/'):
-                    try:
-                        rel_path = os.path.relpath(file_path, pom_dir_path)
-                        if not rel_path.startswith('..'):
-                            affected_files.add(rel_path)
-                    except:
-                        pass
-                else:
-                    affected_files.add(file_path)
-        
-        return list(affected_files)
-    
-    # First attempt without any corrections
-    print(f"[LocalRepo] 📦 Attempting mvn clean install (initial attempt)...")
-    result = attempt_mvn_install()
-    
-    if result is None:
-        return False
-    
-    if result.returncode == 0:
-        print(f"[LocalRepo] ✅ mvn clean install succeeded on first attempt!")
-        return True
-    
-    # If first attempt failed, start LLM correction loop
-    print(f"[LocalRepo] ❌ mvn clean install failed, starting LLM error correction...")
-    if result is not None:
-        print(f"[LocalRepo] 📄 Initial error output:")
-        print(f"[LocalRepo] stdout: {result.stdout}")
-        print(f"[LocalRepo] stderr: {result.stderr}")
-    else:
-        print(f"[LocalRepo] 📄 No error output available (result was None)")
-    
-    correction_history = []
-    
-    for attempt in range(1, MAX_INSTALL_CORRECTION_ATTEMPTS + 1):
-        print(f"[LocalRepo] 🔄 LLM correction attempt {attempt}/{MAX_INSTALL_CORRECTION_ATTEMPTS}")
-        
-        # Combine stdout and stderr for error analysis
-        if result is not None:
-            full_error = f"stdout:\n{result.stdout}\n\nstderr:\n{result.stderr}"
-        else:
-            full_error = "No error output available (result was None)"
-        
-        # First try to fix Maven dependency issues in pom.xml
-        try:
-            corrected_pom_xml = asyncio.run(
-                fix_pom_xml_with_llm(
-                    "",  # We'll read the current pom.xml content
-                    full_error,
-                    os.path.join(pom_dir_path, "pom.xml"),  # Use full path
-                    pr_info
-                )
-            )
-            
-            if corrected_pom_xml:
-                # Read current pom.xml to compare
-                pom_xml_path = os.path.join(pom_dir_path, "pom.xml")
-                try:
-                    with open(pom_xml_path, "r", encoding="utf-8") as f:
-                        current_pom_xml = f.read()
-                    
-                    # Check if the corrected pom.xml is actually different
-                    if corrected_pom_xml.strip() != current_pom_xml.strip():
-                        # Write corrected pom.xml
-                        with open(pom_xml_path, "w", encoding="utf-8") as f:
-                            f.write(corrected_pom_xml)
-                        
-                        print(f"[LocalRepo] ✅ Updated pom.xml to fix dependency errors")
-                        
-                        # Update regenerated_files with the correction
-                        pom_dir = os.path.dirname(pom_file) if os.path.dirname(pom_file) else ""
-                        relative_pom_path = os.path.join(pom_dir, "pom.xml") if pom_dir else "pom.xml"
-                        regenerated_files[relative_pom_path] = {
-                            "old_code": current_pom_xml,
-                            "changes": f"LLM-corrected pom.xml to fix Maven dependency errors (attempt {attempt})",
-                            "updated_code": corrected_pom_xml
-                        }
-                        
-                        # Retry mvn install with the updated pom.xml
-                        print(f"[LocalRepo] 📦 Running mvn clean install after pom.xml update...")
-                        result = attempt_mvn_install()
-                        
-                        if result is not None and result.returncode == 0:
-                            print(f"[LocalRepo] 🎉 mvn clean install succeeded after pom.xml update!")
-                            return True
-                        else:
-                            print(f"[LocalRepo] ⚠️ mvn clean install still failed after pom.xml update")
-                    else:
-                        print(f"[LocalRepo] ⚠️ LLM provided pom.xml but no meaningful changes detected")
-                        
-                except Exception as e:
-                    print(f"[LocalRepo] ❌ Error reading/writing pom.xml: {e}")
-            else:
-                print(f"[LocalRepo] ⚠️ LLM didn't provide pom.xml correction")
-                
-        except Exception as e:
-            print(f"[LocalRepo] ❌ Error trying to fix pom.xml: {e}")
-        
-        # If pom.xml fix didn't work, try to fix Java compilation errors
-        if result is not None and result.returncode != 0:
-            try:
-                # Extract affected files from the error message
-                affected_files = asyncio.run(extract_affected_java_files_from_error_with_llm(full_error, pom_dir_path, pr_info))
-            except Exception as e:
-                print(f"[LocalRepo] ❌ Error with LLM file identification, using fallback: {e}")
-                affected_files = extract_affected_java_files_from_error_fallback(full_error, pom_dir_path)
-            
-            if not affected_files:
-                print(f"[LocalRepo] ⚠️ Could not identify specific files causing build errors")
-                # Try to guess common problematic files
-                common_files = [
-                    'src/main/java/com/example/Application.java',
-                    'src/main/java/com/example/DemoApplication.java',
-                    'src/main/java/Application.java'
-                ]
-                for common_file in common_files:
-                    if os.path.exists(os.path.join(pom_dir_path, common_file)):
-                        affected_files.append(common_file)
-                        break
-            
-            if not affected_files:
-                print(f"[LocalRepo] ❌ No files found to correct, skipping Java correction")
-            else:
-                print(f"[LocalRepo] 🎯 Identified affected Java files: {affected_files}")
-                
-                # Use LLM to fix Java compilation errors
-                try:
-                    corrected_files = asyncio.run(
-                        fix_java_build_errors_with_llm(
-                            full_error,
-                            affected_files,
-                            pom_dir_path,
-                            pr_info
-                        )
-                    )
-                except Exception as e:
-                    print(f"[LocalRepo] ❌ Error running LLM build correction: {e}")
-                    corrected_files = {}
-                
-                if not corrected_files:
-                    print(f"[LocalRepo] ❌ LLM could not provide valid corrections for attempt {attempt}")
-                else:
-                    # Apply corrections to files
-                    files_changed = 0
-                    for file_path, corrected_content in corrected_files.items():
-                        full_file_path = os.path.join(pom_dir_path, file_path)
-                        try:
-                            # Read current content to check if LLM made changes
-                            with open(full_file_path, "r", encoding="utf-8") as f:
-                                current_content = f.read()
-                            
-                            if corrected_content.strip() == current_content.strip():
-                                print(f"[LocalRepo] ⚠️ LLM returned same content for {file_path} (no changes)")
-                                continue
-                            
-                            # Write corrected content
-                            with open(full_file_path, "w", encoding="utf-8") as f:
-                                f.write(corrected_content)
-                            
-                            # Update regenerated_files with the correction
-                            pom_dir = os.path.dirname(pom_file) if os.path.dirname(pom_file) else ""
-                            relative_file_path = os.path.join(pom_dir, file_path) if pom_dir != "." else file_path
-                            regenerated_files[relative_file_path] = {
-                                "old_code": current_content,
-                                "changes": f"LLM-corrected Java build errors (attempt {attempt})",
-                                "updated_code": corrected_content
-                            }
-                            
-                            files_changed += 1
-                            print(f"[LocalRepo] ✅ Applied LLM correction to {file_path}")
-                            
-                        except Exception as e:
-                            print(f"[LocalRepo] ❌ Error writing corrected file {file_path}: {e}")
-                            continue
-                    
-                    if files_changed > 0:
-                        # Track this correction
-                        correction_history.append(f"Fixed {files_changed} Java files to resolve build errors")
-                        
-                        # Retry mvn install with corrected files
-                        print(f"[LocalRepo] 🔄 Retrying mvn clean install with LLM corrections {attempt}...")
-                        result = attempt_mvn_install()
-                        
-                        if result is not None and result.returncode == 0:
-                            print(f"[LocalRepo] 🎉 mvn clean install succeeded after {attempt} LLM correction(s)!")
-                            return True
-                    else:
-                        print(f"[LocalRepo] ⚠️ No files were actually changed in attempt {attempt}")
-        
-        # If we get here, this correction didn't work, continue to next attempt
-        print(f"[LocalRepo] ⚠️ mvn clean install still failed after correction {attempt}, trying next iteration...")
-    
-    print(f"[LocalRepo] ❌ mvn clean install failed after {MAX_INSTALL_CORRECTION_ATTEMPTS} LLM correction attempts")
-    return False
-
-async def fix_pom_xml_with_llm(pom_xml_content, maven_error, pom_file_path, pr_info):
-    """
-    Use LLM to fix Maven dependency issues in pom.xml.
-    Conservative approach - only small, necessary changes.
-    """
-    print(f"[LocalRepo] 🧠 Using LLM to fix Maven dependency issues in {pom_file_path}")
-    
-    # Read current pom.xml if not provided
-    if not pom_xml_content:
-        try:
-            with open(pom_file_path, "r", encoding="utf-8") as f:
-                pom_xml_content = f.read()
-        except Exception as e:
-            print(f"[LocalRepo] ❌ Error reading pom.xml: {e}")
-            return None
-    
-    pom_xml_prompt = f"""You are a Maven expert fixing dependency issues in a pom.xml file.
-
-CURRENT POM.XML:
-{pom_xml_content}
-
-MAVEN ERROR:
-{maven_error}
-
-TASK: Fix the Maven dependency issues in the pom.xml file.
-
-IMPORTANT GUIDELINES:
-1. Make ONLY small, necessary changes to fix the specific error
-2. Do NOT add new features or libraries unless explicitly required by the error
-3. Focus on dependency version conflicts, missing dependencies, or syntax issues
-4. Preserve the existing structure and formatting
-5. Only modify the dependencies section if the error is dependency-related
-6. Be conservative - if unsure, make minimal changes
-
-Return ONLY the corrected pom.xml content. Do not include any explanation or markdown formatting."""
-
     try:
         if not OPENAI_CLIENT:
-            print(f"[LocalRepo] ⚠️ OpenAI not available for pom.xml correction")
-            return None
-        
-        # Use OpenAI to fix pom.xml
+            print(f"[LocalRepo] ⚠️ OpenAI not available for file identification")
+            return []
+        # Use OpenAI to identify files
         response = await asyncio.to_thread(
             OPENAI_CLIENT.chat.completions.create,
             model="gpt-4.1-mini",
-            messages=[{"role": "user", "content": pom_xml_prompt}],
+            messages=[{"role": "user", "content": file_identification_prompt}],
             temperature=0.1
         )
         
-        corrected_content = response.choices[0].message.content
-        if corrected_content:
-            corrected_content = corrected_content.strip()
-            
-            # Clean up the response - remove markdown code blocks if present
-            if corrected_content.startswith('```xml'):
-                corrected_content = corrected_content[6:]
-            if corrected_content.endswith('```'):
-                corrected_content = corrected_content[:-3]
-            corrected_content = corrected_content.strip()
-            
-            print(f"[LocalRepo] ✅ LLM provided pom.xml correction")
-            return corrected_content
+        response_text = response.choices[0].message.content
+        if response_text:
+            response_text = response_text.strip()
         else:
-            print(f"[LocalRepo] ⚠️ LLM returned empty response for pom.xml correction")
-            return None
+            response_text = ""
+        print(f"[LocalRepo] 🤖 LLM response: {response_text}")
+        
+        # Parse the JSON response
+        # Extract JSON from markdown code blocks or use raw response
+        json_content = None
+        
+        json_block_match = re.search(r'```json\s*\n?(.*?)```', response_text, re.DOTALL)
+        if json_block_match:
+            json_content = json_block_match.group(1).strip()
+        elif '```' in response_text:
+            code_block_match = re.search(r'```\s*\n?(.*?)```', response_text, re.DOTALL)
+            if code_block_match:
+                potential_json = code_block_match.group(1).strip()
+                if potential_json.startswith('[') and potential_json.endswith(']'):
+                    json_content = potential_json
             
+        if not json_content:
+            json_content = response_text.strip()
+        
+        affected_files = json.loads(json_content)
+        
+        if isinstance(affected_files, list):
+            # Filter to only files that actually exist
+            existing_files = []
+            for file_path in affected_files:
+                full_path = os.path.join(pom_dir_path, file_path)
+                if os.path.exists(full_path):
+                    existing_files.append(file_path)
+                else:
+                    print(f"[LocalRepo] ⚠️ LLM suggested {file_path} but file doesn't exist")
+            
+            print(f"[LocalRepo] ✅ LLM identified {len(existing_files)} affected Java files: {existing_files}")
+            return existing_files
+        else:
+            print(f"[LocalRepo] ❌ LLM response is not a valid array: {type(affected_files)}")
+            return []
+            
+    except json.JSONDecodeError as e:
+        print(f"[LocalRepo] ❌ Could not parse LLM response as JSON: {e}")
+        return []
+        
     except Exception as e:
-        print(f"[LocalRepo] ❌ Error with LLM pom.xml correction: {e}")
-        return None
+        print(f"[LocalRepo] ❌ Error with LLM file identification: {e}")
+        return []
 
 async def fix_java_build_errors_with_llm(build_error, affected_files, pom_dir_path, pr_info):
     """
