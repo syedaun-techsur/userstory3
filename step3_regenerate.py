@@ -1933,28 +1933,72 @@ def process_pr_with_local_repo(pr_info, regenerated_files):
             
             print(f"[LocalRepo] ✓ Applied LLM changes to {file_path}")
         
-        # Generate lockfile if any package.json was changed (check for files ending with package.json)
+        # Detect project types in the repository
+        print(f"[LocalRepo] 🔍 Detecting project types in repository...")
+        project_types = detect_project_types_in_repo(repo_path)
+        
+        # Process React/npm projects (FRONTEND PIPELINE)
         package_json_files_list = [f for f in regenerated_files.keys() if f.endswith("package.json")]
         package_json_files_dict = {f: regenerated_files[f] for f in package_json_files_list}
         
         if package_json_files_list:
-            print(f"[LocalRepo] package.json files detected: {package_json_files_list}")
+            print(f"[LocalRepo] 🎨 FRONTEND PIPELINE: package.json files detected: {package_json_files_list}")
             
-            # Process each package.json file
+            # Process each package.json file (npm install + npm run build)
             for package_file in package_json_files_list:
                 # Get the directory containing the package.json
                 package_dir = os.path.dirname(package_file) if os.path.dirname(package_file) else "."
                 package_dir_path = os.path.join(repo_path, package_dir)
                 
-                print(f"[LocalRepo] Running npm install in directory: {package_dir_path}")
+                print(f"[LocalRepo] 📦 Running npm install in directory: {package_dir_path}")
                 
                 # Try npm install with intelligent error correction
                 npm_success = run_npm_install_with_error_correction(
                     package_dir_path, package_file, repo_path, regenerated_files, pr_info
                 )
+            
+            # Run npm build with error correction after all dependencies are resolved
+            print(f"[LocalRepo] 🏗️ Running npm build with error correction...")
+            frontend_build_status = run_npm_build_with_error_correction(repo_path, package_json_files_dict, regenerated_files, pr_info)
+        else:
+            print(f"[LocalRepo] 🎨 No package.json files found - skipping frontend pipeline")
+            frontend_build_status = "SKIPPED - No package.json files"
         
-        # Run npm build with error correction after all dependencies are resolved
-        build_status = run_npm_build_with_error_correction(repo_path, package_json_files_dict, regenerated_files, pr_info)
+        # Process Maven/Java projects (BACKEND PIPELINE)
+        pom_xml_files_list = [f for f in regenerated_files.keys() if f.endswith("pom.xml")]
+        pom_xml_files_dict = {f: regenerated_files[f] for f in pom_xml_files_list}
+        
+        if pom_xml_files_list:
+            print(f"[LocalRepo] ☕ BACKEND PIPELINE: pom.xml files detected: {pom_xml_files_list}")
+            
+            # Process each pom.xml file (mvn clean install -DskipTests)
+            for pom_file in pom_xml_files_list:
+                # Get the directory containing the pom.xml
+                pom_dir = os.path.dirname(pom_file) if os.path.dirname(pom_file) else "."
+                pom_dir_path = os.path.join(repo_path, pom_dir)
+                
+                print(f"[LocalRepo] 📦 Running mvn clean install -DskipTests in directory: {pom_dir_path}")
+                
+                # Try mvn install with intelligent error correction
+                mvn_success = run_mvn_install_with_error_correction(
+                    pom_dir_path, pom_file, repo_path, regenerated_files, pr_info
+                )
+        else:
+            print(f"[LocalRepo] ☕ No pom.xml files found - skipping backend pipeline")
+        
+        # Determine overall build status
+        if package_json_files_list and pom_xml_files_list:
+            print(f"[LocalRepo] 🔄 MIXED PROJECT: Both frontend and backend detected")
+            overall_build_status = f"Frontend: {frontend_build_status}, Backend: Maven processed"
+        elif package_json_files_list:
+            print(f"[LocalRepo] 🎨 FRONTEND-ONLY PROJECT: React/npm pipeline completed")
+            overall_build_status = frontend_build_status
+        elif pom_xml_files_list:
+            print(f"[LocalRepo] ☕ BACKEND-ONLY PROJECT: Maven/Java pipeline completed")
+            overall_build_status = "Maven build processed"
+        else:
+            print(f"[LocalRepo] ⚠️ UNKNOWN PROJECT: No package.json or pom.xml detected")
+            overall_build_status = "No build files detected"
         
         # TODO: Future user story - Generate and run tests here
         # print("[LocalRepo] Preparing for test generation and execution...")
@@ -1970,9 +2014,32 @@ def process_pr_with_local_repo(pr_info, regenerated_files):
         print(f"[LocalRepo] 📊 Final summary:")
         print(f"[LocalRepo]   - Total files: {len(regenerated_files)}")
         print(f"[LocalRepo]   - Package.json files processed: {len(package_json_files_list)}")
+        print(f"[LocalRepo]   - Pom.xml files processed: {len(pom_xml_files_list)}")
         
-        print(f"[LocalRepo]   - Build status: {build_status}")
+        print(f"[LocalRepo]   - Overall build status: {overall_build_status}")
         print(f"[LocalRepo] ✓ Workspace preserved at: {workspace_dir}")
+        
+        # Add build metadata to regenerated_files (for PR description)
+        build_summary = {
+            "status": overall_build_status,
+            "frontend": {
+                "package_json_files": package_json_files_list,
+                "build_status": frontend_build_status if 'frontend_build_status' in locals() else "Not processed"
+            },
+            "backend": {
+                "pom_xml_files": pom_xml_files_list,
+                "build_status": "Maven processed" if pom_xml_files_list else "Not processed"
+            },
+            "project_types": project_types,
+            "timestamp": "build_validation_with_correction_completed"
+        }
+        
+        # Store build info in a special metadata entry
+        regenerated_files["_build_validation_metadata"] = {
+            "old_code": "",
+            "changes": f"Build validation with LLM error correction: {overall_build_status}",
+            "updated_code": json.dumps(build_summary, indent=2)
+        }
         
     except Exception as e:
         print(f"[LocalRepo] ❌ Error during local repo processing: {e}")
@@ -2017,3 +2084,424 @@ def regenerate_files(pr_info):
     
     return regenerated_files
 
+# Project type detection
+def detect_project_type(directory_path: str) -> str:
+    """
+    Detect if a directory contains a React/Node.js project or Spring Boot/Maven project.
+    Returns: 'react', 'springboot', 'mixed', or 'unknown'
+    """
+    try:
+        has_package_json = os.path.exists(os.path.join(directory_path, 'package.json'))
+        has_pom_xml = os.path.exists(os.path.join(directory_path, 'pom.xml'))
+        
+        if has_package_json and has_pom_xml:
+            return 'mixed'
+        elif has_package_json:
+            return 'react'
+        elif has_pom_xml:
+            return 'springboot'
+        else:
+            return 'unknown'
+    except Exception as e:
+        print(f"[Step3] ⚠️ Error detecting project type for {directory_path}: {e}")
+        return 'unknown'
+
+def detect_project_types_in_repo(repo_path: str) -> Dict[str, str]:
+    """
+    Detect project types in all subdirectories of a repository.
+    Returns dict mapping directory paths to project types.
+    """
+    project_types = {}
+    
+    try:
+        for root, dirs, files in os.walk(repo_path):
+            # Skip node_modules and target directories
+            dirs[:] = [d for d in dirs if d not in ['node_modules', 'target', '.git']]
+            
+            project_type = detect_project_type(root)
+            if project_type != 'unknown':
+                rel_path = os.path.relpath(root, repo_path)
+                if rel_path == '.':
+                    rel_path = ''
+                project_types[rel_path] = project_type
+                print(f"[Step3] 📁 Detected {project_type} project in: {rel_path or 'root'}")
+    
+    except Exception as e:
+        print(f"[Step3] ⚠️ Error scanning repository for project types: {e}")
+    
+    return project_types
+
+def run_mvn_install_with_error_correction(pom_dir_path, pom_file, repo_path, regenerated_files, pr_info):
+    """
+    Run mvn clean install with intelligent error correction using LLM.
+    Keeps trying until success or max retries reached.
+    Returns True if successful, False otherwise.
+    """
+    print(f"[LocalRepo] 📦 Starting Maven install with intelligent error correction...")
+    
+    MAX_INSTALL_CORRECTION_ATTEMPTS = 10  # Increased to handle both dependency and compilation errors
+    
+    def attempt_mvn_install():
+        """Helper function to attempt mvn clean install"""
+        try:
+            result = subprocess.run(
+                ["mvn", "clean", "install", "-DskipTests"],
+                cwd=pom_dir_path,
+                capture_output=True,
+                text=True,
+                timeout=600  # 10 minute timeout for install
+            )
+            return result
+        except subprocess.TimeoutExpired:
+            print(f"[LocalRepo] ❌ mvn clean install timed out after 10 minutes")
+            return None
+        except FileNotFoundError:
+            print("[LocalRepo] ❌ Maven not found. Please ensure Maven is installed and in PATH.")
+            return None
+        except Exception as e:
+            print(f"[LocalRepo] ❌ Error during mvn clean install: {e}")
+            return None
+    
+    # Initial attempt
+    print(f"[LocalRepo] 📦 Attempting mvn clean install in {pom_dir_path}")
+    result = attempt_mvn_install()
+    
+    if result is None:
+        return False
+    
+    if result.returncode == 0:
+        print(f"[LocalRepo] ✅ mvn clean install completed successfully")
+        return True
+    
+    # Start the correction loop
+    print(f"[LocalRepo] 🔄 Starting LLM error correction loop (max {MAX_INSTALL_CORRECTION_ATTEMPTS} attempts)...")
+    
+    correction_history = []
+    
+    for attempt in range(1, MAX_INSTALL_CORRECTION_ATTEMPTS + 1):
+        print(f"[LocalRepo] 🤖 LLM Correction Attempt {attempt}/{MAX_INSTALL_CORRECTION_ATTEMPTS}")
+        
+        # Check if result is valid before accessing attributes
+        if result is None:
+            print(f"[LocalRepo] ❌ mvn clean install attempt returned None (timeout/error)")
+            break
+            
+        print(f"[LocalRepo] ❌ mvn clean install failed with return code {result.returncode}")
+        print(f"[LocalRepo] 📄 Error output:")
+        print(f"[LocalRepo] stdout: {result.stdout}")
+        print(f"[LocalRepo] stderr: {result.stderr}")
+        
+        # Combine error output for LLM analysis
+        full_error = f"STDOUT:\n{result.stdout}\n\nSTDERR:\n{result.stderr}"
+        
+        # Enhanced prompt with attempt context
+        correction_context = ""
+        if correction_history:
+            correction_context = f"\n\nPREVIOUS CORRECTIONS APPLIED:\n" + "\n".join([f"Attempt {i+1}: {corr}" for i, corr in enumerate(correction_history)])
+        
+        print(f"[LocalRepo] 🤖 Extracting affected Java files from Maven error...")
+        
+        # Extract affected files using LLM
+        try:
+            affected_files = asyncio.run(
+                extract_affected_java_files_from_error_with_llm(
+                    full_error + correction_context, 
+                    pom_dir_path, 
+                    pr_info
+                )
+            )
+        except Exception as e:
+            print(f"[LocalRepo] ❌ Error extracting affected files: {e}")
+            continue  # Try next iteration
+        
+        if not affected_files:
+            print(f"[LocalRepo] ❌ Could not identify affected Java files for attempt {attempt}")
+            continue  # Try next iteration
+        
+        print(f"[LocalRepo] 🤖 Fixing {len(affected_files)} Java files with LLM...")
+        
+        # Fix the affected files using LLM
+        try:
+            corrected_files = asyncio.run(
+                fix_java_build_errors_with_llm(
+                    full_error + correction_context,
+                    affected_files,
+                    pom_dir_path,
+                    pr_info
+                )
+            )
+        except Exception as e:
+            print(f"[LocalRepo] ❌ Error running LLM Java correction: {e}")
+            continue  # Try next iteration
+        
+        if not corrected_files:
+            print(f"[LocalRepo] ❌ LLM could not provide valid Java corrections for attempt {attempt}")
+            continue  # Try next iteration
+        
+        # Apply corrections to files
+        files_changed = 0
+        for file_path, corrected_content in corrected_files.items():
+            full_file_path = os.path.join(pom_dir_path, file_path)
+            try:
+                # Read current content to check if LLM made changes
+                with open(full_file_path, "r", encoding="utf-8") as f:
+                    current_content = f.read()
+                
+                if corrected_content.strip() == current_content.strip():
+                    print(f"[LocalRepo] ⚠️ LLM returned same content for {file_path} (no changes)")
+                    continue
+                
+                # Write corrected content
+                with open(full_file_path, "w", encoding="utf-8") as f:
+                    f.write(corrected_content)
+                
+                # Update regenerated_files with the correction
+                pom_dir = os.path.dirname(pom_file) if os.path.dirname(pom_file) else "."
+                relative_file_path = os.path.join(pom_dir, file_path) if pom_dir != "." else file_path
+                regenerated_files[relative_file_path] = {
+                    "old_code": current_content,
+                    "changes": f"LLM-corrected Java compilation errors (attempt {attempt})",
+                    "updated_code": corrected_content
+                }
+                
+                files_changed += 1
+                print(f"[LocalRepo] ✅ Applied LLM correction to {file_path}")
+                
+            except Exception as e:
+                print(f"[LocalRepo] ❌ Error writing corrected file {file_path}: {e}")
+                continue
+        
+        if files_changed == 0:
+            print(f"[LocalRepo] ⚠️ No files were actually changed in attempt {attempt}")
+            continue
+        
+        # Track this correction
+        correction_history.append(f"Fixed {files_changed} Java files to resolve compilation errors")
+        
+        # Retry mvn clean install with corrected files
+        print(f"[LocalRepo] 🔄 Retrying mvn clean install with LLM corrections {attempt}...")
+        result = attempt_mvn_install()
+        
+        if result is None:
+            continue  # Try next iteration
+        
+        if result.returncode == 0:
+            print(f"[LocalRepo] 🎉 mvn clean install succeeded after {attempt} LLM correction(s)!")
+            return True
+        
+        # If we get here, this correction didn't work, continue to next attempt
+        print(f"[LocalRepo] ⚠️ mvn clean install still failed after correction {attempt}, trying next iteration...")
+    
+    # All correction attempts exhausted
+    print(f"[LocalRepo] ❌ mvn clean install failed after {MAX_INSTALL_CORRECTION_ATTEMPTS} LLM correction attempts")
+    if result is not None:
+        print(f"[LocalRepo] 📄 Final error output:")
+        print(f"[LocalRepo] stdout: {result.stdout}")
+        print(f"[LocalRepo] stderr: {result.stderr}")
+    else:
+        print(f"[LocalRepo] 📄 Final attempt resulted in timeout/error (no output available)")
+    
+    return False
+
+async def extract_affected_java_files_from_error_with_llm(build_error, pom_dir_path, pr_info):
+    """
+    Use LLM to intelligently extract affected Java files from Maven build errors.
+    """
+    print(f"[LocalRepo] 🧠 Using INTELLIGENT LLM file identification for Maven build errors")
+    
+    # Get list of all Java files in the project for reference
+    all_files = []
+    try:
+        for root, dirs, files in os.walk(pom_dir_path):
+            for file in files:
+                if file.endswith(('.java', '.kt', '.xml')):
+                    rel_path = os.path.relpath(os.path.join(root, file), pom_dir_path)
+                    all_files.append(rel_path)
+    except Exception as e:
+        print(f"[LocalRepo] ⚠️ Error scanning directory: {e}")
+    
+    file_identification_prompt = f"""You are analyzing a Maven build error to identify which specific Java files need to be fixed. 
+
+BUILD ERROR:
+{build_error}
+
+Available Java files in the project:
+{chr(10).join(all_files[:50])}  {"... (truncated)" if len(all_files) > 50 else ""}
+
+TASK: Identify the specific Java files that are causing this Maven build error and need to be modified to fix it.
+
+IMPORTANT GUIDELINES:
+1. Look for Java file paths mentioned in the error
+2. Consider compilation errors, missing imports, or syntax issues
+3. If there are dependency issues, identify the files that import the problematic dependencies
+4. Be specific - return only files that actually exist and need modification
+5. Focus on .java and .kt files
+
+Return ONLY a JSON array of file paths, relative to the project root:
+["src/main/java/com/example/App.java", "src/test/java/com/example/Test.java"]
+
+Do not include any explanation, just the JSON array."""
+
+    try:
+        # Use MCP to identify files
+        server_params = StdioServerParameters(command="python", args=["server.py"])
+        
+        async with stdio_client(server_params) as (read_stream, write_stream):
+            async with ClientSession(read_stream, write_stream) as session:
+                await session.initialize()
+                
+                # Call LLM for file identification
+                result = await asyncio.wait_for(
+                    session.call_tool("codegen", arguments={"prompt": file_identification_prompt}),
+                    timeout=120  # 2 minute timeout for file identification
+                )
+                
+                # Extract response content
+                response_text = extract_response_content(result, "java_file_identification")
+                if response_text:
+                    response_text = response_text.strip()
+                else:
+                    response_text = ""
+                print(f"[LocalRepo] 🤖 LLM response: {response_text}")
+                
+                # Parse the JSON response - handle both markdown code blocks and raw JSON
+                try:
+                    # First try to extract JSON from markdown code blocks
+                    json_content = None
+                    
+                    # Pattern 1: ```json ... ```
+                    json_block_match = re.search(r'```json\s*\n?(.*?)```', response_text, re.DOTALL)
+                    if json_block_match:
+                        json_content = json_block_match.group(1).strip()
+                        print(f"[LocalRepo] 🔍 Extracted JSON from markdown code block")
+                    
+                    # Pattern 2: ``` ... ``` (generic code block)
+                    elif '```' in response_text:
+                        code_block_match = re.search(r'```\s*\n?(.*?)```', response_text, re.DOTALL)
+                        if code_block_match:
+                            potential_json = code_block_match.group(1).strip()
+                            # Check if it looks like a JSON array
+                            if potential_json.startswith('[') and potential_json.endswith(']'):
+                                json_content = potential_json
+                                print(f"[LocalRepo] 🔍 Extracted JSON from generic code block")
+                    
+                    # Pattern 3: Raw JSON (fallback)
+                    if not json_content:
+                        json_content = response_text.strip()
+                        print(f"[LocalRepo] 🔍 Using raw response as JSON")
+                    
+                    # Parse the extracted JSON
+                    affected_files = json.loads(json_content)
+                    
+                    if isinstance(affected_files, list):
+                        # Filter to only files that actually exist
+                        existing_files = []
+                        for file_path in affected_files:
+                            full_path = os.path.join(pom_dir_path, file_path)
+                            if os.path.exists(full_path):
+                                existing_files.append(file_path)
+                            else:
+                                print(f"[LocalRepo] ⚠️ LLM suggested {file_path} but file doesn't exist")
+                        
+                        print(f"[LocalRepo] ✅ LLM identified {len(existing_files)} affected Java files: {existing_files}")
+                        return existing_files
+                    else:
+                        print(f"[LocalRepo] ❌ LLM response is not a valid array: {type(affected_files)}")
+                        return []
+                        
+                except json.JSONDecodeError as e:
+                    print(f"[LocalRepo] ❌ Could not parse LLM response as JSON: {e}")
+                    print(f"[LocalRepo] 🔍 Raw response: {response_text[:200]}...")
+                    return []
+                    
+    except Exception as e:
+        print(f"[LocalRepo] ❌ Error with MCP file identification: {e}")
+        return []
+
+async def fix_java_build_errors_with_llm(build_error, affected_files, pom_dir_path, pr_info):
+    """
+    Use LLM to fix Java compilation errors.
+    Conservative approach - only small, necessary changes.
+    """
+    print(f"[LocalRepo] 🧠 Using LLM to fix Java build errors in {len(affected_files)} files")
+    
+    corrected_files = {}
+    
+    for file_path in affected_files:
+        full_file_path = os.path.join(pom_dir_path, file_path)
+        
+        try:
+            # Read the current file content
+            with open(full_file_path, "r", encoding="utf-8") as f:
+                current_content = f.read()
+        except Exception as e:
+            print(f"[LocalRepo] ❌ Error reading {file_path}: {e}")
+            continue
+        
+        # Determine file type for appropriate prompt
+        file_ext = file_path.split('.')[-1].lower()
+        language = "Java" if file_ext == "java" else "Kotlin" if file_ext == "kt" else "Java"
+        
+        java_prompt = f"""You are a {language} expert fixing compilation errors.
+
+BUILD ERROR:
+{build_error}
+
+CURRENT {language.upper()} FILE ({file_path}):
+{current_content}
+
+TASK: Fix the compilation errors in this {language} file.
+
+IMPORTANT GUIDELINES:
+1. Make ONLY small, necessary changes to fix the specific compilation error
+2. Do NOT add new features or methods unless explicitly required by the error
+3. Focus on syntax errors, missing imports, or type mismatches
+4. Preserve the existing code structure and logic
+5. Be conservative - if unsure, make minimal changes
+6. Only fix the specific error mentioned in the build output
+
+Return ONLY the corrected {language} code. Do not include any explanation or markdown formatting."""
+
+        try:
+            # Use MCP to fix Java/Kotlin file
+            server_params = StdioServerParameters(command="python", args=["server.py"])
+            
+            async with stdio_client(server_params) as (read_stream, write_stream):
+                async with ClientSession(read_stream, write_stream) as session:
+                    await session.initialize()
+                    
+                    # Call LLM for Java/Kotlin correction
+                    result = await asyncio.wait_for(
+                        session.call_tool("codegen", arguments={"prompt": java_prompt}),
+                        timeout=120  # 2 minute timeout for Java correction
+                    )
+                    
+                    # Extract response content
+                    corrected_content = extract_response_content(result, "java_correction")
+                    if corrected_content:
+                        corrected_content = corrected_content.strip()
+                        
+                        # Clean up the response - remove markdown code blocks if present
+                        if corrected_content.startswith(f'```{file_ext}'):
+                            corrected_content = corrected_content[len(f'```{file_ext}'):]
+                        elif corrected_content.startswith('```'):
+                            corrected_content = corrected_content[3:]
+                        if corrected_content.endswith('```'):
+                            corrected_content = corrected_content[:-3]
+                        corrected_content = corrected_content.strip()
+                        
+                        # Only include if content actually changed
+                        if corrected_content != current_content:
+                            corrected_files[file_path] = corrected_content
+                            print(f"[LocalRepo] ✅ LLM provided {language} correction for {file_path}")
+                        else:
+                            print(f"[LocalRepo] ⚠️ LLM returned same content for {file_path} (no changes)")
+                    else:
+                        print(f"[LocalRepo] ⚠️ LLM returned empty response for {file_path}")
+                        
+        except Exception as e:
+            print(f"[LocalRepo] ❌ Error with MCP {language} correction for {file_path}: {e}")
+            continue
+    
+    print(f"[LocalRepo] ✅ LLM provided corrections for {len(corrected_files)} {language} files")
+    return corrected_files
