@@ -1,0 +1,26 @@
+[project]
+name = "ai_refine"
+version = "0.1.0"
+description = "ai-refine using crewAI"
+authors = [{ name = "Your Name", email = "you@example.com" }]
+requires-python = ">=3.10,<3.14"
+dependencies = [
+    "crewai[tools]>=0.148.0,<1.0.0",
+    "crewai-tools[mcp]>=0.0.1",
+    "mcp>=1.0.0",
+    "aiohttp>=3.8.0",
+    "pydantic>=2.0.0",
+    "python-dotenv>=1.0.0"
+]
+
+[project.scripts]
+ai_refine = "ai_refine.main:run"
+run_crew = "ai_refine.main:run"
+github_mcp_server = "ai_refine.mcp_servers.github_server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.crewai]
+type = "crew"
