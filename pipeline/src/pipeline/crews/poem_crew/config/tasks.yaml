@@ -3,6 +3,9 @@ analyze_pr_task:
     Fetch information about GitHub pull request #{pr_number} from repository {repo_name} using the get_pr_info tool.
     Then collect all relevant files from this PR using the collect_pr_files tool.
     Provide a summary of the PR's basic information and the files that were changed.
+    Also provide content of README.md from the repository using the fetch_readme_requirements tool.
   expected_output: >
-    Comprehensive summary including PR metadata and list of changed files with their contents
+    Comprehensive summary including PR metadata and list of changed files with their contents. 
+    Also provide content of README.md at the end from the repository which are our requirements.
+
   agent: github_pr_agent

@@ -10,17 +10,14 @@ import os
 class AiRefine():
     """AiRefine crew with real GitHub MCP integration"""
 
-    agents: List[BaseAgent]
-    tasks: List[Task]
 
-    # GitHub MCP Server configuration - using your real GitHub server
-    # Updated path to point to the correct location of github_server.py
+    
     mcp_server_params = [
         StdioServerParameters(
-            command="python3",
-            args=["../../github_server.py"],  # Path relative to src/ai_refine/
+            command="python",
+            args=["../github_server.py"],  # Path from src/ to pipeline/github_server.py
             env={"GITHUB_TOKEN": os.getenv("GITHUB_TOKEN", ""), **os.environ},
-        )
+        ),
     ]
 
     @agent
@@ -28,9 +25,10 @@ class AiRefine():
         """GitHub PR Management Agent with real MCP tools"""
         return Agent(
             config=self.agents_config['github_pr_agent'],
-            tools=self.get_mcp_tools("get_pr_info", "collect_pr_files"),
+            tools=self.get_mcp_tools("get_pr_info", "collect_pr_files", 'fetch_readme_requirements'),
             verbose=False
         )
+    
 
     @task
     def analyze_pr_task(self) -> Task:
@@ -38,6 +36,7 @@ class AiRefine():
         return Task(
             config=self.tasks_config['analyze_pr_task'],
         )
+    
 
     @crew
     def crew(self) -> Crew:

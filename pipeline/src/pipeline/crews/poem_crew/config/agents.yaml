@@ -8,5 +8,4 @@ github_pr_agent:
     You're a GitHub PR and file collector. You fetch PR information and collect
     all the files that were changed in the PR. You provide clear summaries
     of what you found.
-
-# ← REMOVE: github_creator_agent and code_analyzer_agent
+  

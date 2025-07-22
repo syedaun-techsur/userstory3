@@ -180,107 +180,28 @@ def collect_files_for_refinement(repo_name: str, pr_number: int, pr_info=None) -
         logger.error(f"Direct API failed: {e}")
         return {}
 
-def fetch_repo_context(repo_name: str, pr_number: int, target_file: str, pr_info=None) -> str:
-    """Fetch repository context for a specific file"""
-    context = ""
-    total_chars = 0
-    MAX_CONTEXT_CHARS = 4000000  # GPT-4.1 Mini context limit
-
+def fetch_requirements_from_readme(repo_name: str, branch: str) -> str:
     if not github_direct:
-        logger.error("Direct GitHub API not available for context")
-        return ""
-
+        logger.error("Direct GitHub API not available for README")
+        return "# No README found\n\nPlease provide coding standards and requirements."
+    
     try:
-        # Get PR files through direct GitHub API
         repo = github_direct.get_repo(repo_name)
-        pr = repo.get_pull(pr_number)
+        file_content = repo.get_contents("README.md", ref=branch)
         
-        ref = pr_info.get("pr_branch", pr.head.ref) if pr_info else pr.head.ref
+        if isinstance(file_content, list):
+            logger.info("README.md is a directory, not a file")
+            return "# No README found\n\nPlease provide coding standards and requirements."
         
-        for file in pr.get_files():
-            if file.filename == target_file:
-                continue
-            # Skip lock files in any directory
-            if file.filename.endswith("package-lock.json") or file.filename.endswith("package.lock.json"):
-                continue
-            # Skip GitHub workflow and config files
-            if file.filename.startswith('.github/'):
-                continue
-            # Skip asset and binary files (don't need in context)
-            asset_extensions = [
-                # Images
-                '.svg', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.bmp', '.tiff',
-                # Videos
-                '.mp4', '.avi', '.mov', '.wmv', '.flv', '.webm',
-                # Audio
-                '.mp3', '.wav', '.flac', '.aac', '.ogg',
-                # Fonts
-                '.ttf', '.otf', '.woff', '.woff2', '.eot',
-                # Documents
-                '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
-                # Archives
-                '.zip', '.rar', '.7z', '.tar', '.gz',
-                # Binaries
-                '.exe', '.dll', '.so', '.dylib'
-            ]
-            if any(file.filename.lower().endswith(ext) for ext in asset_extensions):
-                continue
-            try:
-                file_content = repo.get_contents(file.filename, ref=ref)
-                
-                # Handle both single file and list of files
-                if isinstance(file_content, list):
-                    continue  # Skip directories
-                
-                # Get the FULL file content
-                full_content = file_content.decoded_content.decode('utf-8')
-                file_size = len(full_content)
-                
-                section = f"\n// File: {file.filename} ({file_size} chars)\n{full_content}\n"
-                
-                # Still keep a reasonable limit to avoid overwhelming the model
-                if total_chars + len(section) > MAX_CONTEXT_CHARS:
-                    break
-                    
-                context += section
-                total_chars += len(section)
-                
-            except Exception as e:
-                logger.error(f"Error reading file {file.filename}: {e}")
-                continue
-                
+        content = file_content.decoded_content.decode('utf-8')
+        logger.info(f"Successfully read README.md ({len(content)} chars)")
+        return content
+        
     except Exception as e:
-        logger.error(f"Error getting PR context: {e}")
-        return ""
-        
-    return context
-
-async def create_refined_pr(repo_name: str, base_branch: str, new_branch: str, 
-                           title: str, body: str, files: Dict[str, str]) -> Dict[str, Any]:
-    """Create a new PR with refined code"""
-    try:
-        # For now, return mock data until we implement the full PR creation
-        # This would integrate with your existing PR creation logic
-        logger.info(f"Creating PR '{title}' in {repo_name}")
-        logger.info(f"Base branch: {base_branch}, New branch: {new_branch}")
-        logger.info(f"Files to update: {len(files)}")
-        
-        return {
-            "success": True,
-            "message": f"PR '{title}' created successfully",
-            "branch": new_branch,
-            "files_updated": len(files),
-            "repo": repo_name,
-            "pr_url": f"https://github.com/{repo_name}/pull/123"  # Mock URL
-        }
-    except Exception as e:
-        logger.error(f"Error creating PR: {e}")
-        return {
-            "success": False,
-            "error": str(e)
-        }
-
+        logger.error(f"Error reading README.md: {e}")
+        return "# No README found\n\nPlease provide coding standards and requirements."
 # MCP Server handlers
+
 @server.list_tools()
 async def handle_list_tools():
     """List available GitHub tools"""
@@ -341,7 +262,20 @@ async def handle_list_tools():
                 },
                 "required": ["repo_name", "base_branch", "new_branch", "title", "body", "files"]
             }
-        )
+        ),
+        Tool(
+            name="fetch_readme_requirements",
+            description="Fetch the content of README.md from a given repository and branch",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "repo_name": {"type": "string", "description": "Repository name (owner/repo)"},
+                    "branch": {"type": "string", "description": "Branch name (e.g., main, develop, or PR branch)"}
+                },
+                "required": ["repo_name", "branch"]
+            }
+        ),
+        
     ]
 
 @server.call_tool()
@@ -353,21 +287,8 @@ async def handle_call_tool(name: str, arguments: Dict[str, Any]):
             result = get_pr_by_number(arguments["repo_name"], arguments["pr_number"])
         elif name == "collect_pr_files":
             result = collect_files_for_refinement(arguments["repo_name"], arguments["pr_number"])
-        elif name == "fetch_repo_context":
-            result = fetch_repo_context(
-                arguments["repo_name"], 
-                arguments["pr_number"], 
-                arguments["target_file"]
-            )
-        elif name == "create_refined_pr":
-            result = await create_refined_pr(
-                arguments["repo_name"],
-                arguments["base_branch"],
-                arguments["new_branch"],
-                arguments["title"],
-                arguments["body"],
-                arguments["files"]
-            )
+        elif name == "fetch_readme_requirements":
+            result = fetch_requirements_from_readme(arguments["repo_name"], arguments["branch"])
         else:
             raise ValueError(f"Unknown tool: {name}")
         
