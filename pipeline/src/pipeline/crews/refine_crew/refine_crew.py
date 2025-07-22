@@ -72,34 +72,10 @@ class CodeRefinementCrew():
                 # Extract the raw result from CrewOutput
                 result = result.raw
             
-            # Parse the result to ensure it's the correct format
+            # Return the raw LLM output as a string
             if isinstance(result, str):
-                # Try to parse as JSON
-                try:
-                    parsed_result = json.loads(result)
-                    if isinstance(parsed_result, dict):
-                        print(f"✅ Successfully refined file: {file_path}")
-                        return parsed_result
-                    else:
-                        raise ValueError("Result is not a dictionary")
-                except json.JSONDecodeError:
-                    # Try to extract JSON from the string if it's wrapped in text
-                    try:
-                        # Look for JSON-like content in the string
-                        json_match = re.search(r'\{.*\}', result, re.DOTALL)
-                        if json_match:
-                            json_str = json_match.group(0)
-                            parsed_result = json.loads(json_str)
-                            if isinstance(parsed_result, dict):
-                                print(f"✅ Successfully refined file: {file_path}")
-                                return parsed_result
-                        
-                        # If no JSON found, try to extract the actual result
-                        print(f"Raw result from agent: {result[:200]}...")
-                        raise ValueError("Could not extract valid JSON from result")
-                    except Exception as e:
-                        print(f"Error extracting JSON: {e}")
-                        raise ValueError("Result is not valid JSON")
+                print(f"✅ Successfully refined file: {file_path}")
+                return {file_path: result}
             elif isinstance(result, dict):
                 print(f"✅ Successfully refined file: {file_path}")
                 return result

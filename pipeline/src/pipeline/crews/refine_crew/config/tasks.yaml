@@ -23,13 +23,8 @@ refine_code_task:
     2. Apply fixes and improvements while maintaining original functionality
     3. Return the refined code in the specified format
     
-    IMPORTANT: Return a JSON object where the key is the file path and the value is the refined file content.
-    The refined content should follow the format specified below.
   expected_output: >
-    A JSON object where the key is the file path and the value is the refined file content.
-    Example format: {{"{file_path}": "// refined content"}}
-    
-    The refined content should follow this EXACT format:
+    Return the refined content in this EXACT format:
 
     ### Changes:
     - A bullet-point summary of what was changed (ONLY essential fixes).

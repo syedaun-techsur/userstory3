@@ -108,7 +108,6 @@ class AiRefine():
                         
                         # If no JSON found, try to extract the actual result
                         # The agent might have added explanatory text
-                        print(f"Raw result from agent: {result[:200]}...")
                         raise ValueError("Could not extract valid JSON from result")
                     except Exception as e:
                         print(f"Error extracting JSON: {e}")
