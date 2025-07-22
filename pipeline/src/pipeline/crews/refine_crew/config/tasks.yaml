@@ -1,0 +1,59 @@
+refine_code_task:
+  description: >
+    Analyze and improve the single code file: {file_path}
+    
+    File content:
+    ```{file_extension}
+    {file_content}
+    ```
+    
+    Apply an IMPROVEMENT-FOCUSED APPROACH to this file:
+    - Fix all syntax errors, missing imports, type issues, and obvious bugs
+    - Improve code quality, readability, and maintainability
+    - Optimize performance where beneficial and safe
+    - Apply modern patterns and best practices when appropriate
+    - Refactor code for better structure and clarity
+    - DO NOT add new features or capabilities beyond what's needed
+    - DO NOT add new libraries unless absolutely necessary for fixes
+    - Focus on: error fixes, code improvements, performance optimizations, better patterns
+    - Avoid: adding unnecessary features, introducing new dependencies
+    
+    For the file {file_path}:
+    1. Analyze the current code for issues and improvement opportunities
+    2. Apply fixes and improvements while maintaining original functionality
+    3. Return the refined code in the specified format
+    
+    IMPORTANT: Return a JSON object where the key is the file path and the value is the refined file content.
+    The refined content should follow the format specified below.
+  expected_output: >
+    A JSON object where the key is the file path and the value is the refined file content.
+    Example format: {{"{file_path}": "// refined content"}}
+    
+    The refined content should follow this EXACT format:
+
+    ### Changes:
+    - A bullet-point summary of what was changed (ONLY essential fixes).
+
+    ### Updated Code:
+    ```{file_extension}
+    <ONLY THE NEW/IMPROVED CODE HERE>
+    ```
+
+    ⚠️ CRITICAL REQUIREMENTS:
+    1. **CONSERVATIVE APPROACH**: Only make changes that fix actual problems
+    2. **NO OVER-ENGINEERING**: Do not refactor working code
+    3. **ESSENTIAL FIXES ONLY**: syntax errors, missing imports, type issues, obvious bugs
+    4. Do NOT use <think> tags or any other XML-like tags
+    5. Provide bullet-point summary of changes under the `### Changes` heading
+    6. Provide ONLY ONE code block under the `### Updated Code` heading.
+    7. Do NOT show the old code again in your response
+    8. Do NOT suggest creating new files. Only update this file
+    9. The response must start with `### Changes:` and end with the code block
+    10. Return ONLY the corrected code, not refactored code
+    11. CRITICAL: Return the SAME TYPE of code as the original file ({file_extension})
+    12. Do NOT convert file types or change file structure
+    13. **IF NO ESSENTIAL FIXES ARE NEEDED:**
+        - In the ### Changes section, write: 'No essential changes needed.'
+        - In the ### Updated Code section, return the original code unchanged.
+    14. **CHANGES MUST BE ESSENTIAL**: Only report actual fixes, not improvements
+  agent: code_refiner_agent
