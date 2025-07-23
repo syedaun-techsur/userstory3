@@ -55,7 +55,6 @@ class PoemFlow(Flow[PoemState]):
         for file_path, file_content in files_dict.items():
             refined_single_file = refine_crew.refine_files({file_path: file_content})
             raw_response = refined_single_file.get(file_path, file_content)
-            print("RAW RESPONSE: ", raw_response)
             
             # Extract changes and updated code from raw response
             changes = extract_changes(raw_response, file_path)
