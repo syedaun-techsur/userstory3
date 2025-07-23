@@ -125,6 +125,14 @@ def collect_files_for_refinement(repo_name: str, pr_number: int, pr_info=None) -
             if file["filename"].startswith('.github/'):
                 logger.info(f"Skipping GitHub workflow or config file: {file['filename']}")
                 continue
+            # Skip LICENSE files (various formats)
+            if file["filename"].upper() in ['LICENSE', 'LICENSE.TXT', 'LICENSE.MD', 'LICENSE.MIT', 'LICENSE.APACHE', 'LICENSE.BSD']:
+                logger.info(f"Skipping license file: {file['filename']}")
+                continue
+            # Skip macOS .DS_Store files
+            if file["filename"] == '.DS_Store' or file["filename"].endswith('/.DS_Store'):
+                logger.info(f"Skipping .DS_Store file: {file['filename']}")
+                continue
             # Skip asset and binary files (don't need AI refinement)
             asset_extensions = [
                 # Images
@@ -291,8 +299,6 @@ async def handle_call_tool(name: str, arguments: Dict[str, Any]):
             result = fetch_requirements_from_readme(arguments["repo_name"], arguments["branch"])
         else:
             raise ValueError(f"Unknown tool: {name}")
-        
-        logger.info(f"Tool {name} result: {result}")
         return [TextContent(type="text", text=json.dumps(result, indent=2))]
         
     except Exception as e:

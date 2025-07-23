@@ -70,14 +70,6 @@ class PoemFlow(Flow[PoemState]):
             }
             print(f"Refined: {file_path}")
 
-        # Print the changes and refined code for each file
-        for file_path, result in refined_files.items():
-            print(f"\nFile: {file_path}")
-            print("-" * 40)
-            print(f"Changes: {result['changes']}")
-            print(f"Updated Code: {result['updated_code']}")
-            print("-" * 40)
-
         self.state.refined_code = refined_files
         return refined_files
     
