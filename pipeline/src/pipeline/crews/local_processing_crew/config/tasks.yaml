@@ -1,0 +1,50 @@
+validate_builds_task:
+  description: >
+    Clone the repository and apply the refined code changes, then run builds to validate everything works.
+    
+    Context:
+    - Repository: {repo_name}
+    - PR Number: {pr_number}
+    - Refined Files: {refined_files}
+    
+    Steps:
+    1. Clone the repository to a local workspace
+    2. Apply the refined code changes to the appropriate files
+    3. Run the appropriate build commands (npm install, mvn install, etc.)
+    4. Capture any build errors or warnings
+    5. Report the build status and any issues found
+    
+    Return a detailed report of the build process and any errors encountered.
+  expected_output: >
+    A detailed report containing:
+    - Build status (success/failure)
+    - List of any build errors encountered
+    - List of files that were successfully processed
+    - Any warnings or issues found during the build process
+  agent: build_agent
+
+fix_errors_task:
+  description: >
+    Analyze any build errors from the validation step and provide specific fixes.
+    
+    You have access to the output from the previous build validation task. Review that output to understand:
+    - What build errors occurred
+    - Which files were affected
+    - What the build status was
+    
+    Steps:
+    1. Review the build validation results from the previous task
+    2. Extract the list of build errors and affected files from the previous task output
+    3. Analyze each build error in detail
+    4. Identify the root cause of each error
+    5. Provide specific code fixes for each issue
+    6. Return the fixes in a format that can be applied to the code
+    
+    Return a list of specific fixes that need to be applied to resolve the build errors.
+  expected_output: >
+    A list of specific fixes containing:
+    - File paths that need to be modified
+    - Specific code changes for each file
+    - Explanation of what each fix addresses
+    - Any additional dependencies or configuration changes needed
+  agent: error_correction_agent

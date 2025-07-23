@@ -18,7 +18,8 @@ def extract_changes(response: str, file_name: str) -> str:
     changes = ""
     
     # First try to find changes outside <think> block
-    changes_match = re.search(r"### Changes:\n([\s\S]*?)(?=\n```[a-zA-Z0-9]*\n|### Updated Code:|$)", response, re.IGNORECASE)
+    # Handle both "### Changes:\n" and "### Changes: " formats
+    changes_match = re.search(r"### Changes:\s*\n([\s\S]*?)(?=\n```[a-zA-Z0-9]*\n|### Updated Code:|$)", response, re.IGNORECASE)
     if changes_match:
         changes = changes_match.group(1).strip()
     else:
@@ -26,7 +27,7 @@ def extract_changes(response: str, file_name: str) -> str:
         think_match = re.search(r"<think>([\s\S]*?)</think>", response, re.IGNORECASE)
         if think_match:
             think_content = think_match.group(1)
-            changes_match = re.search(r"### Changes:\n([\s\S]*?)(?=\n```[a-zA-Z0-9]*\n|### Updated Code:|$)", think_content, re.IGNORECASE)
+            changes_match = re.search(r"### Changes:\s*\n([\s\S]*?)(?=\n```[a-zA-Z0-9]*\n|### Updated Code:|$)", think_content, re.IGNORECASE)
             if changes_match:
                 changes = changes_match.group(1).strip()
     

@@ -24,7 +24,7 @@ refine_code_task:
     3. Return the refined code in the specified format
     
   expected_output: >
-    Return the refined content in this EXACT format:
+    Return the refined content in this EXACT format. CRITICAL: Use newline character after colon, NOT space:
 
     ### Changes:
     - A bullet-point summary of what was changed (ONLY essential fixes).
@@ -35,20 +35,14 @@ refine_code_task:
     ```
 
     ⚠️ CRITICAL REQUIREMENTS:
-    1. **CONSERVATIVE APPROACH**: Only make changes that fix actual problems
-    2. **NO OVER-ENGINEERING**: Do not refactor working code
-    3. **ESSENTIAL FIXES ONLY**: syntax errors, missing imports, type issues, obvious bugs
     4. Do NOT use <think> tags or any other XML-like tags
-    5. Provide bullet-point summary of changes under the `### Changes` heading
-    6. Provide ONLY ONE code block under the `### Updated Code` heading.
-    7. Do NOT show the old code again in your response
-    8. Do NOT suggest creating new files. Only update this file
+    5. Provide bullet-point summary of changes under the `### Changes:` heading (with newline after colon)
+    6. Provide ONLY ONE code block under the `### Updated Code:` heading (with newline after colon)
     9. The response must start with `### Changes:` and end with the code block
-    10. Return ONLY the corrected code, not refactored code
-    11. CRITICAL: Return the SAME TYPE of code as the original file ({file_extension})
     12. Do NOT convert file types or change file structure
     13. **IF NO ESSENTIAL FIXES ARE NEEDED:**
-        - In the ### Changes section, write: 'No essential changes needed.'
-        - In the ### Updated Code section, return the original code unchanged.
-    14. **CHANGES MUST BE ESSENTIAL**: Only report actual fixes, not improvements
+        - In the ### Changes: section, write: 'No essential changes needed.'
+        - In the ### Updated Code: section, return the original code unchanged.
+    15. **EXACT FORMATTING**: CRITICAL - Use "### Changes:" followed by a NEWLINE character, NOT a space. Same for "### Updated Code:"
+    16. **FORMAT ENFORCEMENT**: The headings must be exactly "### Changes:" and "### Updated Code:" with a newline character immediately after the colon
   agent: code_refiner_agent
