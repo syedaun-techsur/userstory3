@@ -8,11 +8,17 @@ validate_builds_task:
     - Refined Files: {refined_files}
     
     Steps:
-    1. Clone the repository to a local workspace
+    1. Clone the repository to a local workspace (use relative paths like 'workspace/repo_name_branch')
     2. Apply the refined code changes to the appropriate files
     3. Run the appropriate build commands (npm install, mvn install, etc.)
     4. Capture any build errors or warnings
     5. Report the build status and any issues found
+    
+    Important Notes:
+    - Use relative paths starting with 'workspace/' instead of absolute paths like '/workspace/'
+    - If a repository already exists, the git tool will automatically update it with latest changes
+    - Check the workspace directory for available projects if build paths fail
+    - Report the actual workspace path used for cloning/updating
     
     Return a detailed report of the build process and any errors encountered.
   expected_output: >
@@ -21,6 +27,7 @@ validate_builds_task:
     - List of any build errors encountered
     - List of files that were successfully processed
     - Any warnings or issues found during the build process
+    - The actual workspace path used for the repository
   agent: build_agent
 
 fix_errors_task:
