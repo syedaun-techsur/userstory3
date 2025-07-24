@@ -2,9 +2,15 @@ from crewai import Agent, Crew, Process, Task
 from crewai.project import CrewBase, agent, crew, task
 from crewai.agents.agent_builder.base_agent import BaseAgent
 from typing import List, Dict
+import os
+from git import Repo  # type: ignore
+from dotenv import load_dotenv
+from github import Github, Auth
 
-# Import our tools
-from .tools.git_tool import GitTool
+load_dotenv()
+
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+
 from .tools.build_tool import BuildTool
 from .tools.file_tool import FileSystemTool
 
@@ -13,20 +19,11 @@ class LocalProcessingCrew():
     """Local processing crew for build validation and error correction"""
     
     @agent
-    def build_agent(self) -> Agent:
-        """Agent specialized in running builds and detecting errors"""
+    def build_and_fix_agent(self) -> Agent:
+        """Agent specialized in running builds and fixing errors"""
         return Agent(
-            config=self.agents_config['build_agent'],
-            tools=[GitTool(), FileSystemTool(), BuildTool()],
-            verbose=True
-        )
-    
-    @agent
-    def error_correction_agent(self) -> Agent:
-        """Agent specialized in analyzing build errors and fixing them"""
-        return Agent(
-            config=self.agents_config['error_correction_agent'],
-            tools=[FileSystemTool(), BuildTool()],  # We'll add web search later
+            config=self.agents_config['build_and_fix_agent'],
+            tools=[FileSystemTool(), BuildTool()],  # Needs both tools for building and fixing
             verbose=True
         )
     
@@ -51,6 +48,34 @@ class LocalProcessingCrew():
             process=Process.sequential,
             verbose=True
         )
+    @staticmethod
+    def get_persistent_workspace(repo_name, pr_number):
+        """Get or create persistent workspace for this PR"""
+        # Create workspace directory
+        workspace_base = "workspace"
+        os.makedirs(workspace_base, exist_ok=True)
+        
+        # Use repo name and PR number for unique workspace
+        safe_repo_name = repo_name.replace('/', '_').replace('\\', '_')
+        workspace_dir = os.path.join(workspace_base, f"{safe_repo_name}_PR{pr_number}")
+        return workspace_dir
+    
+    @staticmethod
+    def get_pr_branch(repo_name: str, pr_number: int) -> str:
+        """Extract the branch name for a given PR"""
+        try:
+            from github import Github
+            
+            if not GITHUB_TOKEN:
+                raise ValueError("GITHUB_TOKEN environment variable not set")
+            
+            github_direct = Github(auth=Auth.Token(GITHUB_TOKEN))
+            repo = github_direct.get_repo(repo_name)
+            pr = repo.get_pull(pr_number)
+            return pr.head.ref
+        
+        except Exception as e:
+            raise Exception(f"Error extracting PR branch: {str(e)}")
     
     def process_files(self, repo_name: str, pr_number: int, refined_files: Dict) -> Dict:
         """Process refined files through local validation and error correction"""
@@ -59,6 +84,58 @@ class LocalProcessingCrew():
             "pr_number": pr_number,
             "refined_files": refined_files
         }
+        try:
+            # Extract PR branch information
+            pr_branch = self.get_pr_branch(repo_name, pr_number)
+            print(f"GitTool: Extracted branch '{pr_branch}' for PR #{pr_number}")
+            
+            workspace_dir = self.get_persistent_workspace(repo_name, pr_number)
+            
+            # Clone or update the repository
+            if os.path.exists(workspace_dir):
+                print(f"GitTool: Updating existing workspace: {workspace_dir}")
+                try:
+                    repo = Repo(workspace_dir)
+                    repo.remotes.origin.pull()
+                except Exception as e:
+                    print(f"GitTool: Error updating workspace, recreating: {e}")
+                    import shutil
+                    shutil.rmtree(workspace_dir)
+                    repo_url = f"https://{GITHUB_TOKEN}@github.com/{repo_name}.git"
+                    repo = Repo.clone_from(repo_url, workspace_dir, branch=pr_branch)
+            else:
+                print(f"GitTool: Creating new workspace: {workspace_dir}")
+                repo_url = f"https://{GITHUB_TOKEN}@github.com/{repo_name}.git"
+                repo = Repo.clone_from(repo_url, workspace_dir, branch=pr_branch)
+            
+            print(f"GitTool: Successfully processed repository at {workspace_dir}")
+            repo_path = workspace_dir
+
+            # Apply all LLM changes to local files
+            print(f"[LocalRepo] Applying LLM changes to {len(refined_files)} files...")
+            
+            for file_path, file_data in refined_files.items():
+                local_file_path = os.path.join(repo_path, file_path)
+                
+                # Create directories if they don't exist
+                os.makedirs(os.path.dirname(local_file_path), exist_ok=True)
+                
+                # Write the LLM-refined content to the local file
+                with open(local_file_path, "w", encoding="utf-8") as f:
+                    f.write(file_data["updated_code"])
+                
+                print(f"[LocalRepo] ✓ Applied LLM changes to {file_path}")
+            context["workspace_path"] = workspace_dir
+            result = self.crew().kickoff(context)
+            return result
+           
         
-        result = self.crew().kickoff(context)
-        return result
+            
+            
+        except Exception as e:
+            error_msg = f"Error in git operation: {str(e)}"
+            print(f"GitTool: {error_msg}")
+            return error_msg
+
+        
+        

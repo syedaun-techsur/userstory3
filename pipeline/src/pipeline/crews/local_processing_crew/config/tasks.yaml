@@ -1,24 +1,28 @@
 validate_builds_task:
   description: >
-    Clone the repository and apply the refined code changes, then run builds to validate everything works.
+    Run builds to validate that the applied code changes work correctly.
     
     Context:
     - Repository: {repo_name}
     - PR Number: {pr_number}
-    - Refined Files: {refined_files}
+    - Directory: {workspace_path} (format: workspace/repo_name_PRnumber)
     
     Steps:
-    1. Clone the repository to a local workspace (use relative paths like 'workspace/repo_name_branch')
-    2. Apply the refined code changes to the appropriate files
-    3. Run the appropriate build commands (npm install, mvn install, etc.)
+    1. Navigate to the workspace directory: {workspace_path}
+    2. Detect the project type (Node.js, Java/Maven, etc.) by looking for build files
+    3. Run the appropriate build commands:
+       - For Node.js projects: npm install && npm run build
+       - For Java/Maven projects: mvn clean install -DskipTests
+       - For other projects: detect and run appropriate build commands
     4. Capture any build errors or warnings
     5. Report the build status and any issues found
     
     Important Notes:
-    - Use relative paths starting with 'workspace/' instead of absolute paths like '/workspace/'
-    - If a repository already exists, the git tool will automatically update it with latest changes
-    - Check the workspace directory for available projects if build paths fail
-    - Report the actual workspace path used for cloning/updating
+    - The repository is already cloned and all refined files have been applied
+    - Work directly in the {workspace_path} directory (e.g., workspace/microsoft_vscode_PR12345)
+    - Use the build_tool to run build commands
+    - If build fails, provide detailed error analysis for the next task
+    - You can use file_system_tool to examine files if needed for error analysis
     
     Return a detailed report of the build process and any errors encountered.
   expected_output: >
@@ -27,12 +31,12 @@ validate_builds_task:
     - List of any build errors encountered
     - List of files that were successfully processed
     - Any warnings or issues found during the build process
-    - The actual workspace path used for the repository
-  agent: build_agent
+    - The workspace path used for the build
+  agent: build_and_fix_agent
 
 fix_errors_task:
   description: >
-    Analyze any build errors from the validation step and provide specific fixes.
+    Analyze any build errors from the validation step and fix them, then test the fixes.
     
     You have access to the output from the previous build validation task. Review that output to understand:
     - What build errors occurred
@@ -42,16 +46,29 @@ fix_errors_task:
     Steps:
     1. Review the build validation results from the previous task
     2. Extract the list of build errors and affected files from the previous task output
-    3. Analyze each build error in detail
-    4. Identify the root cause of each error
-    5. Provide specific code fixes for each issue
-    6. Return the fixes in a format that can be applied to the code
+    3. Use file_system_tool to read the affected files and understand the current code
+    4. Analyze each build error in detail
+    5. Identify the root cause of each error
+    6. Provide specific code fixes for each issue
+    7. Use file_system_tool to write the corrected files back to the filesystem
+    8. Test your fixes by running builds again using build_tool
+    9. If there are still errors, repeat the fix-test cycle until all builds pass
+    10. Return a final report of all fixes applied and the final build status
     
-    Return a list of specific fixes that need to be applied to resolve the build errors.
+    Important Notes:
+    - You are the same agent that ran the build, so you maintain full context
+    - Work in the {workspace_path} directory (e.g., workspace/microsoft_vscode_PR12345)
+    - Iterate through fix-test cycles until all builds pass
+    - Use both file_system_tool and build_tool as needed
+    - Provide a comprehensive report of all changes made
+    
+    Return a detailed report of all fixes applied and the final build status.
   expected_output: >
-    A list of specific fixes containing:
-    - File paths that need to be modified
-    - Specific code changes for each file
+    A comprehensive report containing:
+    - List of all build errors that were encountered
+    - Specific fixes applied to each file
     - Explanation of what each fix addresses
-    - Any additional dependencies or configuration changes needed
-  agent: error_correction_agent
+    - Final build status after all fixes
+    - Number of fix-test cycles performed
+    - Any remaining issues or warnings
+  agent: build_and_fix_agent
