@@ -40,7 +40,7 @@ def extract_changes(response: str, file_name: str) -> str:
     
     # Clean up URLs and citations from web search
     if changes:
-        print(f"[Step3] 🧹 Cleaning up URLs and citations from changes for {file_name}...")
+        
         
         # Remove URLs in parentheses with citations
         # Pattern: ([domain.com](url)) or ([description](url))
@@ -70,7 +70,7 @@ def extract_changes(response: str, file_name: str) -> str:
         
         changes = changes.strip()
         
-        print(f"[Step3] ✅ Cleaned changes section for {file_name}")
+        
     
     return changes
 

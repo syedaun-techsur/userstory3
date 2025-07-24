@@ -16,7 +16,7 @@ run_and_test_task:
        - Use file_system_tool to read the package.json file
        - Check if a "build" script exists in the package.json
        - If no "build" script exists, add a dummy build script: "build": "echo 'Build completed successfully'"
-       - Run: npm install
+       - Run: npm install --legacy-peer-deps
        - Run: npm run build
        - DO NOT run npm test (skip testing for now)
     3. For each pom.xml file in build_files.pom_xml:
@@ -30,8 +30,9 @@ run_and_test_task:
     - Use the directory_path from build_files context for each project
     - Use the build_tool to run commands with the correct project_path
     - Only work with files that are in the refined_files context - do not create any new files
-    - For frontend projects, only run npm install and npm run build (skip npm test)
+    - For frontend projects, only run npm install --legacy-peer-deps and npm run build (skip npm test)
     - Always check for build script existence and add dummy script if missing
+    - Use --legacy-peer-deps flag to handle peer dependency conflicts
     - If the build fails, provide detailed error analysis for the fix_code_task
     
     Return a detailed report of the build process and any errors encountered.
@@ -55,26 +56,51 @@ fix_code_task:
     Context:
     - Build Files: {build_files} (contains paths to package.json and pom.xml files)
     - Refined Files: {refined_files} (only modify these files)
+    - Build Errors: {build_errors} (only run if this contains actual errors)
     
     Steps:
     1. Review the build and test results from the previous task.
-    2. Extract the list of errors and affected files.
-    3. Use the file_system_tool to read the affected files and understand the current code.
-    4. Analyze each error in detail to identify the root cause.
-    5. Provide specific code fixes for each issue.
-    6. Use the file_system_tool to write the corrected files back to the filesystem.
-    7. Return a final report of all fixes applied.
+    2. Check if there are actual build errors in the build_errors context.
+    3. If there are NO build errors, return a report stating "No errors to fix - build completed successfully."
+    4. If there ARE build errors:
+       - Extract the list of errors and affected files.
+       - For npm dependency errors (like "No matching version found"):
+         * Read the package.json file using file_system_tool
+         * Identify the problematic dependency name and version
+         * Use web search to find the latest available version of the package
+         * Search for: "[package-name] npm latest version" or "[package-name] compatible versions"
+         * Update the package.json with the correct version based on search results
+         * Write the corrected package.json back to the filesystem
+         * Test the fix by running npm install --legacy-peer-deps using build_tool
+       - For other build errors:
+         * Use web search to find solutions for the specific error
+         * Search for: "[error message] solution" or "[error type] fix"
+         * Use the file_system_tool to read the affected files and understand the current code
+         * Apply the solution found through web search
+         * Use the file_system_tool to write the corrected files back to the filesystem
+    5. Return a final report of all fixes applied (or no fixes needed).
     
     Important Notes:
     - Work in the {workspace_path} directory.
     - Use the file_system_tool to read and write files.
+    - Use the build_tool to run npm commands (npm install --legacy-peer-deps).
+    - Use web search to find dependency versions and error solutions.
     - ONLY modify files that are in the refined_files context - do not create any new files
-    - Provide a comprehensive report of all changes made.
+    - ONLY run this task if there are actual build errors in build_errors context
+    - If no errors exist, simply report success without making any file changes
+    - For npm dependency errors, use web search to find the latest compatible version
+    - For other errors, search the web for specific solutions
+    - Always test the fix by running npm install --legacy-peer-deps after making changes
+    - Provide a comprehensive report of all changes made (or lack thereof).
     
-    Return a detailed report of all fixes applied.
+    Return a detailed report of all fixes applied (or confirmation that no fixes were needed).
   expected_output: >
     A comprehensive report containing:
-    - List of all build or test errors that were encountered.
-    - Specific fixes applied to each file.
-    - Explanation of what each fix addresses.
+    - Whether any build errors were detected.
+    - If errors exist: List of all build errors that were encountered.
+    - If errors exist: Web search results used for finding solutions.
+    - If errors exist: Specific fixes applied to each file.
+    - If errors exist: Explanation of what each fix addresses.
+    - If errors exist: Results of testing the fixes (e.g., npm install success/failure).
+    - If no errors: Confirmation that build completed successfully with no fixes needed.
   agent: fix_code_agent

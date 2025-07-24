@@ -13,6 +13,7 @@ GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
 from .tools.build_tool import BuildTool
 from .tools.file_tool import FileSystemTool
+from crewai_tools import SerperDevTool
 
 @CrewBase
 class LocalProcessingCrew():
@@ -32,7 +33,7 @@ class LocalProcessingCrew():
         """Agent specialized in fixing code based on build errors"""
         return Agent(
             config=self.agents_config['fix_code_agent'],
-            tools=[FileSystemTool()], # This agent only needs to modify files
+            tools=[FileSystemTool(), BuildTool(), SerperDevTool()], # This agent needs both tools to fix and test
             verbose=True
         )
     
@@ -273,32 +274,64 @@ class LocalProcessingCrew():
                     "mvn clean install completed successfully"
                 ]
                 
-                build_succeeded = any(indicator in build_result_str for indicator in success_indicators)
+                # Check for build errors - look for error indicators
+                error_indicators = [
+                    "Return Code: 1",
+                    "Return Code: 2", 
+                    "Return Code: 3",
+                    "Return Code: 4",
+                    "Return Code: 5",
+                    "npm ERR!",
+                    "npm error",
+                    "npm WARN!",
+                    "npm warn",
+                    "mvn ERROR",
+                    "BUILD FAILURE",
+                    "Build failed",
+                    "Build status: Failure",
+                    "Error:",
+                    "Failed to",
+                    "Cannot find",
+                    "Module not found",
+                    "No matching version found",
+                    "notarget",
+                    "SyntaxError",
+                    "TypeError",
+                    "ReferenceError"
+                ]
                 
-                if build_succeeded:
+                build_succeeded = any(indicator in build_result_str for indicator in success_indicators)
+                build_has_errors = any(indicator in build_result_str for indicator in error_indicators)
+                
+                if build_succeeded and not build_has_errors:
                     print("--- Build Succeeded ---")
                     return {"status": "success", "result": build_result_str}
 
-                print(f"--- Build Failed. Attempting to fix... ---")
-                
-                # Add build errors as string to context
-                context['build_errors'] = build_result_str
-                
-                # Create and run the fix crew
-                fix_crew = Crew(
-                    agents=[self.fix_code_agent()],
-                    tasks=[self.fix_code_task()],
-                    process=Process.sequential,
-                    verbose=True
-                )
-                fix_result = fix_crew.kickoff(inputs=context)
-                
-                print(f"--- Fix Attempt Completed ---")
-                print(fix_result)
+                # Only run fix agent if there are actual errors
+                if build_has_errors:
+                    print(f"--- Build Failed with Errors. Attempting to fix... ---")
+                    
+                    # Add build errors as string to context
+                    context['build_errors'] = build_result_str
+                    
+                    # Create and run the fix crew
+                    fix_crew = Crew(
+                        agents=[self.fix_code_agent()],
+                        tasks=[self.fix_code_task()],
+                        process=Process.sequential,
+                        verbose=True
+                    )
+                    fix_result = fix_crew.kickoff(inputs=context)
+                    
+                    print(f"--- Fix Attempt Completed ---")
+                    print(fix_result)
+                else:
+                    print(f"--- Build Completed Successfully (no errors detected) ---")
+                    return {"status": "success", "result": build_result_str}
 
             print(f"--- Max retries reached. Build failed. ---")
             return {"status": "failure", "final_result": build_result_str}
-            
+        
         except Exception as e:
             error_msg = f"Error in local processing: {str(e)}"
             print(f"LocalProcessingCrew: {error_msg}")
