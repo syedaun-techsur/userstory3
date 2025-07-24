@@ -1,74 +1,80 @@
-validate_builds_task:
+run_and_test_task:
   description: >
-    Run builds to validate that the applied code changes work correctly.
+    Run builds and tests to validate that the code changes work correctly.
     
     Context:
     - Repository: {repo_name}
     - PR Number: {pr_number}
     - Directory: {workspace_path} (format: workspace/repo_name_PRnumber)
+    - Build Files: {build_files}
+    - Refined Files: {refined_files} (only work with these files)
     
     Steps:
-    1. Navigate to the workspace directory: {workspace_path}
-    2. Detect the project type (Node.js, Java/Maven, etc.) by looking for build files
-    3. Run the appropriate build commands:
-       - For Node.js projects: npm install && npm run build
-       - For Java/Maven projects: mvn clean install -DskipTests
-       - For other projects: detect and run appropriate build commands
-    4. Capture any build errors or warnings
+    1. Review the build_files context to understand what projects need to be built
+    2. For each package.json file in build_files.package_json:
+       - Navigate to the directory_path specified
+       - Use file_system_tool to read the package.json file
+       - Check if a "build" script exists in the package.json
+       - If no "build" script exists, add a dummy build script: "build": "echo 'Build completed successfully'"
+       - Run: npm install
+       - Run: npm run build
+       - DO NOT run npm test (skip testing for now)
+    3. For each pom.xml file in build_files.pom_xml:
+       - Navigate to the directory_path specified  
+       - Run: mvn clean install
+    4. Capture any build errors and warnings
     5. Report the build status and any issues found
     
     Important Notes:
     - The repository is already cloned and all refined files have been applied
-    - Work directly in the {workspace_path} directory (e.g., workspace/microsoft_vscode_PR12345)
-    - Use the build_tool to run build commands
-    - If build fails, provide detailed error analysis for the next task
-    - You can use file_system_tool to examine files if needed for error analysis
+    - Use the directory_path from build_files context for each project
+    - Use the build_tool to run commands with the correct project_path
+    - Only work with files that are in the refined_files context - do not create any new files
+    - For frontend projects, only run npm install and npm run build (skip npm test)
+    - Always check for build script existence and add dummy script if missing
+    - If the build fails, provide detailed error analysis for the fix_code_task
     
     Return a detailed report of the build process and any errors encountered.
   expected_output: >
     A detailed report containing:
-    - Build status (success/failure)
-    - List of any build errors encountered
-    - List of files that were successfully processed
-    - Any warnings or issues found during the build process
-    - The workspace path used for the build
-  agent: build_and_fix_agent
+    - Build status (success/failure).
+    - List of any build errors encountered.
+    - Any warnings or issues found during the process.
+    - The workspace path used.
+    - Information about any dummy build scripts that were added.
+  agent: run_and_test_agent
 
-fix_errors_task:
+fix_code_task:
   description: >
-    Analyze any build errors from the validation step and fix them, then test the fixes.
+    Analyze any build or test errors from the previous step and fix them.
     
-    You have access to the output from the previous build validation task. Review that output to understand:
-    - What build errors occurred
-    - Which files were affected
-    - What the build status was
+    You have access to the output from the run_and_test_task. Review that output to understand:
+    - What build or test errors occurred.
+    - Which files were affected.
+    
+    Context:
+    - Build Files: {build_files} (contains paths to package.json and pom.xml files)
+    - Refined Files: {refined_files} (only modify these files)
     
     Steps:
-    1. Review the build validation results from the previous task
-    2. Extract the list of build errors and affected files from the previous task output
-    3. Use file_system_tool to read the affected files and understand the current code
-    4. Analyze each build error in detail
-    5. Identify the root cause of each error
-    6. Provide specific code fixes for each issue
-    7. Use file_system_tool to write the corrected files back to the filesystem
-    8. Test your fixes by running builds again using build_tool
-    9. If there are still errors, repeat the fix-test cycle until all builds pass
-    10. Return a final report of all fixes applied and the final build status
+    1. Review the build and test results from the previous task.
+    2. Extract the list of errors and affected files.
+    3. Use the file_system_tool to read the affected files and understand the current code.
+    4. Analyze each error in detail to identify the root cause.
+    5. Provide specific code fixes for each issue.
+    6. Use the file_system_tool to write the corrected files back to the filesystem.
+    7. Return a final report of all fixes applied.
     
     Important Notes:
-    - You are the same agent that ran the build, so you maintain full context
-    - Work in the {workspace_path} directory (e.g., workspace/microsoft_vscode_PR12345)
-    - Iterate through fix-test cycles until all builds pass
-    - Use both file_system_tool and build_tool as needed
-    - Provide a comprehensive report of all changes made
+    - Work in the {workspace_path} directory.
+    - Use the file_system_tool to read and write files.
+    - ONLY modify files that are in the refined_files context - do not create any new files
+    - Provide a comprehensive report of all changes made.
     
-    Return a detailed report of all fixes applied and the final build status.
+    Return a detailed report of all fixes applied.
   expected_output: >
     A comprehensive report containing:
-    - List of all build errors that were encountered
-    - Specific fixes applied to each file
-    - Explanation of what each fix addresses
-    - Final build status after all fixes
-    - Number of fix-test cycles performed
-    - Any remaining issues or warnings
-  agent: build_and_fix_agent
+    - List of all build or test errors that were encountered.
+    - Specific fixes applied to each file.
+    - Explanation of what each fix addresses.
+  agent: fix_code_agent
