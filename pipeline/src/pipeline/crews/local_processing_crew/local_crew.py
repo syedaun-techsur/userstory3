@@ -48,6 +48,56 @@ class LocalProcessingCrew():
             process=Process.sequential,
             verbose=True
         )
+
+    # Project type detection
+    @staticmethod
+    def detect_project_type(directory_path: str) -> str:
+        """
+        Detect if a directory contains a React/Node.js project or Spring Boot/Maven project.
+        Returns: 'react', 'springboot', 'mixed', or 'unknown'
+        """
+        try:
+            has_package_json = os.path.exists(os.path.join(directory_path, 'package.json'))
+            has_pom_xml = os.path.exists(os.path.join(directory_path, 'pom.xml'))
+            
+            if has_package_json and has_pom_xml:
+                return 'mixed'
+            elif has_package_json:
+                return 'react'
+            elif has_pom_xml:
+                return 'springboot'
+            else:
+                return 'unknown'
+        except Exception as e:
+            print(f"[Step3] ⚠️ Error detecting project type for {directory_path}: {e}")
+            return 'unknown'
+    
+    @staticmethod
+    def detect_project_types_in_repo(self, repo_path: str) -> Dict[str, str]:
+        """
+        Detect project types in all subdirectories of a repository.
+        Returns dict mapping directory paths to project types.
+        """
+        project_types = {}
+        
+        try:
+            for root, dirs, files in os.walk(repo_path):
+                # Skip node_modules and target directories
+                dirs[:] = [d for d in dirs if d not in ['node_modules', 'target', '.git']]
+                
+                project_type = self.detect_project_type(root)
+                if project_type != 'unknown':
+                    rel_path = os.path.relpath(root, repo_path)
+                    if rel_path == '.':
+                        rel_path = ''
+                    project_types[rel_path] = project_type
+                    print(f"[Step3] 📁 Detected {project_type} project in: {rel_path or 'root'}")
+        
+        except Exception as e:
+            print(f"[Step3] ⚠️ Error scanning repository for project types: {e}")
+        
+        return project_types
+        
     @staticmethod
     def get_persistent_workspace(repo_name, pr_number):
         """Get or create persistent workspace for this PR"""
