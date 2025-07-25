@@ -21,7 +21,7 @@ run_and_test_task:
        - DO NOT run npm test (skip testing for now)
     3. For each pom.xml file in build_files.pom_xml:
        - Navigate to the directory_path specified  
-       - Run: mvn clean install
+       - Run: mvn clean install -DskipTests
     4. Capture any build errors and warnings
     5. Report the build status and any issues found
     
@@ -30,7 +30,8 @@ run_and_test_task:
     - Use the directory_path from build_files context for each project
     - Use the build_tool to run commands with the correct project_path
     - Only work with files that are in the refined_files context - do not create any new files
-    - For frontend projects, only run npm install --legacy-peer-deps and npm run build (skip npm test)
+    - For frontend (React) projects, only run npm install --legacy-peer-deps and npm run build (skip npm test)
+    - For Java (Maven) projects, always use mvn clean install -DskipTests
     - Always check for build script existence and add dummy script if missing
     - Use --legacy-peer-deps flag to handle peer dependency conflicts
     - If the build fails, provide detailed error analysis for the fix_code_task
