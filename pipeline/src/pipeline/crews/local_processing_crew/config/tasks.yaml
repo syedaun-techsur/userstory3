@@ -1,107 +1,108 @@
-run_and_test_task:
+frontend_task:
   description: >
-    Run builds and tests to validate that the code changes work correctly.
+    Build and fix frontend (React/Node.js) projects. This task must complete successfully
+    before the backend task can proceed.
     
     Context:
     - Repository: {repo_name}
     - PR Number: {pr_number}
     - Directory: {workspace_path} (format: workspace/repo_name_PRnumber)
-    - Build Files: {build_files}
     - Refined Files: {refined_files} (only work with these files)
     
     Steps:
-    1. Review the build_files context to understand what projects need to be built
-    2. For each package.json file in build_files.package_json:
-       - Navigate to the directory_path specified
-       - Use file_system_tool to read the package.json file
-       - Check if a "build" script exists in the package.json
-       - If no "build" script exists, add a dummy build script: "build": "echo 'Build completed successfully'"
-       - Run: npm install --legacy-peer-deps
-       - Run: npm run build
-       - DO NOT run npm test (skip testing for now)
-    3. For each pom.xml file in build_files.pom_xml:
-       - Navigate to the directory_path specified  
-       - Run: mvn clean install -DskipTests
-    4. Capture any build errors and warnings
-    5. Report the build status and any issues found
+    1. Check if any frontend projects exist by looking for package.json files in refined_files
+    2. If NO package.json files found:
+       - Report: "No frontend projects detected - skipping frontend build"
+       - Return success status to allow backend task to proceed
+    3. If package.json files found:
+       - For each package.json file in refined_files:
+         * Navigate to the directory containing the package.json
+         * Use file_read_tool to read the package.json file
+         * Check if a "build" script exists in the package.json
+         * If no "build" script exists, add a dummy build script: "build": "echo 'Build completed successfully'"
+         * Use file_writer_tool to write the updated package.json back
+         * Run: npm install --legacy-peer-deps using build_tool
+         * Run: npm run build using build_tool
+         * If build fails, analyze the error and fix it:
+           - For dependency errors: Use web search to find compatible versions
+           - For other errors: Use web search to find solutions
+           - Apply fixes using file_writer_tool
+           - Re-run npm install --legacy-peer-deps and npm run build
+         * Continue fixing and re-building until success or max attempts reached
+    4. Report final status: success (all builds passed) or failure (could not fix all issues)
     
     Important Notes:
     - The repository is already cloned and all refined files have been applied
-    - Use the directory_path from build_files context for each project
-    - Use the build_tool to run commands with the correct project_path
-    - Only work with files that are in the refined_files context - do not create any new files
-    - For frontend (React) projects, only run npm install --legacy-peer-deps and npm run build (skip npm test)
-    - For Java (Maven) projects, always use mvn clean install -DskipTests
+    - Use directory_read_tool to explore the workspace structure
+    - Use file_read_tool to read package.json and other files
+    - Use file_writer_tool to write corrected files
+    - Use build_tool to run npm commands
+    - Use web search to find dependency versions and error solutions
+    - Only work with files that are in the refined_files context
+    - For frontend projects, only run npm install --legacy-peer-deps and npm run build (skip npm test)
     - Always check for build script existence and add dummy script if missing
     - Use --legacy-peer-deps flag to handle peer dependency conflicts
-    - If the build fails, provide detailed error analysis for the fix_code_task
+    - This task MUST complete successfully for the backend task to proceed
     
-    Return a detailed report of the build process and any errors encountered.
+    Return a detailed report of the frontend build process and final status.
   expected_output: >
     A detailed report containing:
-    - Build status (success/failure).
-    - List of any build errors encountered.
-    - Any warnings or issues found during the process.
-    - The workspace path used.
-    - Information about any dummy build scripts that were added.
-  agent: run_and_test_agent
+    - Whether frontend projects were detected
+    - If frontend projects exist: Build status (success/failure)
+    - If frontend projects exist: List of any build errors encountered and fixes applied
+    - If frontend projects exist: Information about any dummy build scripts that were added
+    - Final status: "SUCCESS" (all builds passed) or "FAILURE" (could not fix all issues)
+    - The workspace path used
+  agent: frontend_agent
 
-fix_code_task:
+backend_task:
   description: >
-    Analyze any build or test errors from the previous step and fix them.
-    
-    You have access to the output from the run_and_test_task. Review that output to understand:
-    - What build or test errors occurred.
-    - Which files were affected.
+    Build and fix backend (Java/Maven) projects. This task only runs after the frontend task
+    has completed successfully.
     
     Context:
-    - Build Files: {build_files} (contains paths to package.json and pom.xml files)
-    - Refined Files: {refined_files} (only modify these files)
-    - Build Errors: {build_errors} (only run if this contains actual errors)
+    - Repository: {repo_name}
+    - PR Number: {pr_number}
+    - Directory: {workspace_path} (format: workspace/repo_name_PRnumber)
+    - Refined Files: {refined_files} (only work with these files)
+    - Frontend Task Result: (result from previous frontend task)
     
     Steps:
-    1. Review the build and test results from the previous task.
-    2. Check if there are actual build errors in the build_errors context.
-    3. If there are NO build errors, return a report stating "No errors to fix - build completed successfully."
-    4. If there ARE build errors:
-       - Extract the list of errors and affected files.
-       - For npm dependency errors (like "No matching version found"):
-         * Read the package.json file using file_system_tool
-         * Identify the problematic dependency name and version
-         * Use web search to find the latest available version of the package
-         * Search for: "[package-name] npm latest version" or "[package-name] compatible versions"
-         * Update the package.json with the correct version based on search results
-         * Write the corrected package.json back to the filesystem
-         * Test the fix by running npm install --legacy-peer-deps using build_tool
-       - For other build errors:
-         * Use web search to find solutions for the specific error
-         * Search for: "[error message] solution" or "[error type] fix"
-         * Use the file_system_tool to read the affected files and understand the current code
-         * Apply the solution found through web search
-         * Use the file_system_tool to write the corrected files back to the filesystem
-    5. Return a final report of all fixes applied (or no fixes needed).
+    1. Check if any backend projects exist by looking for pom.xml files in refined_files
+    2. If NO pom.xml files found:
+       - Report: "No backend projects detected - skipping backend build"
+       - Return success status
+    3. If pom.xml files found:
+       - For each pom.xml file in refined_files:
+         * Navigate to the directory containing the pom.xml
+         * Use file_read_tool to read the pom.xml file
+         * Run: mvn clean install -DskipTests using build_tool
+         * If build fails, analyze the error and fix it:
+           - For dependency errors: Use web search to find compatible versions
+           - For compilation errors: Use web search to find solutions
+           - Apply fixes using file_writer_tool
+           - Re-run mvn clean install -DskipTests
+         * Continue fixing and re-building until success or max attempts reached
+    4. Report final status: success (all builds passed) or failure (could not fix all issues)
     
     Important Notes:
-    - Work in the {workspace_path} directory.
-    - Use the file_system_tool to read and write files.
-    - Use the build_tool to run npm commands (npm install --legacy-peer-deps).
-    - Use web search to find dependency versions and error solutions.
-    - ONLY modify files that are in the refined_files context - do not create any new files
-    - ONLY run this task if there are actual build errors in build_errors context
-    - If no errors exist, simply report success without making any file changes
-    - For npm dependency errors, use web search to find the latest compatible version
-    - For other errors, search the web for specific solutions
-    - Always test the fix by running npm install --legacy-peer-deps after making changes
-    - Provide a comprehensive report of all changes made (or lack thereof).
+    - This task only runs after frontend_task has completed successfully
+    - The repository is already cloned and all refined files have been applied
+    - Use directory_read_tool to explore the workspace structure
+    - Use file_read_tool to read pom.xml and other files
+    - Use file_writer_tool to write corrected files
+    - Use build_tool to run mvn commands
+    - Use web search to find dependency versions and error solutions
+    - Only work with files that are in the refined_files context
+    - For Java (Maven) projects, always use mvn clean install -DskipTests
+    - This task can run independently if no frontend projects exist
     
-    Return a detailed report of all fixes applied (or confirmation that no fixes were needed).
+    Return a detailed report of the backend build process and final status.
   expected_output: >
-    A comprehensive report containing:
-    - Whether any build errors were detected.
-    - If errors exist: List of all build errors that were encountered.
-    - If errors exist: Web search results used for finding solutions.
-    - If errors exist: Specific fixes applied to each file.
-    - If errors exist: Explanation of what each fix addresses.
-    - If errors exist: Results of testing the fixes (e.g., npm install success/failure).
-    - If no errors: Confirmation that build completed successfully with no fixes needed.
-  agent: fix_code_agent
+    A detailed report containing:
+    - Whether backend projects were detected
+    - If backend projects exist: Build status (success/failure)
+    - If backend projects exist: List of any build errors encountered and fixes applied
+    - Final status: "SUCCESS" (all builds passed) or "FAILURE" (could not fix all issues)
+    - The workspace path used
+  agent: backend_agent
