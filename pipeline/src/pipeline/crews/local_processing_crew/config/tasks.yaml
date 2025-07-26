@@ -24,7 +24,7 @@ frontend_task:
          * Run: npm install --legacy-peer-deps using build_tool
          * Run: npm run build using build_tool
          * If build fails, analyze the error and fix it:
-           - For dependency errors: Use web search to find compatible versions
+           - For dependency errors: Use web search to find compatible versions and solutions
            - For other errors: Use web search to find solutions
            - Apply fixes using file_writer_tool
            - Re-run npm install --legacy-peer-deps and npm run build
@@ -37,7 +37,7 @@ frontend_task:
     - Use file_read_tool to read package.json and other files
     - Use file_writer_tool to write corrected files
     - Use build_tool to run npm commands
-    - Use web search to find dependency versions and error solutions
+    - ALWAYS use web search to find compatible package versions and error solutions
     - Only work with files that are in the refined_files context
     - For frontend projects, only run npm install --legacy-peer-deps and npm run build (skip npm test)
     - Always check for build script existence and add dummy script if missing
