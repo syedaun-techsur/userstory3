@@ -8,12 +8,17 @@ import os
 class BuildToolInput(BaseModel):
     project_path: str = Field(description="Path to the project directory")
     build_command: str = Field(description="Build command to run (e.g., 'npm install', 'mvn install')")
+    
+    
 
 class BuildTool(BaseTool):
     name: str = "build_tool"
     description: str = "Run build commands and capture output"
     args_schema: Type[BaseModel] = BuildToolInput
-
+    
+    def cache_function(self, *args, **kwargs) -> bool:
+        return False
+    
     def _run(self, project_path: str, build_command: str) -> str:
         """Run a build command in the specified project directory"""
         try:

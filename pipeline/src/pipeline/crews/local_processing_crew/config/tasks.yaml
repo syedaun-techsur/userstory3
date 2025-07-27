@@ -78,12 +78,13 @@ backend_task:
        - For each pom.xml file in refined_files:
          * Navigate to the directory containing the pom.xml
          * Use file_read_tool to read the pom.xml file
-         * Run: mvn clean install -DskipTests using build_tool
+         * Remove target folder if it exists using build_tool: rm -rf target/
+         * Run: mvn clean install -Dmaven.test.skip=true -U using build_tool (U flag forces dependency updates)
          * If build fails, analyze the error and fix it:
-           - For dependency errors: Use web search to find compatible versions
+           - For dependency errors: Use web search to find compatible versions and solutions
            - For compilation errors: Use web search to find solutions
            - Apply fixes using file_writer_tool
-           - Re-run mvn clean install -DskipTests
+           - Re-run rm -rf target/, mvn clean install -Dmaven.test.skip=true -U
          * Continue fixing and re-building until success or max attempts reached
     4. Report final status: success (all builds passed) or failure (could not fix all issues)
     
@@ -94,9 +95,10 @@ backend_task:
     - Use file_read_tool to read pom.xml and other files
     - Use file_writer_tool to write corrected files
     - Use build_tool to run mvn commands
-    - Use web search to find dependency versions and error solutions
+    - ALWAYS use web search to find compatible dependency versions and error solutions
     - Only work with files that are in the refined_files context
-    - For Java (Maven) projects, always use mvn clean install -DskipTests
+    - For Java (Maven) projects, always remove target folder first, then run mvn clean install -Dmaven.test.skip=true -U
+    - The -U flag forces Maven to check for updated dependencies
     - This task can run independently if no frontend projects exist
     
     Return a detailed report of the backend build process and final status.

@@ -25,7 +25,8 @@ class LocalProcessingCrew():
         return Agent(
             config=self.agents_config['frontend_agent'],
             tools=[BuildTool(), SerperDevTool(), FileReadTool(), FileWriterTool(), DirectoryReadTool()],
-            verbose=True
+            verbose=True,
+            cache=False
         )
         
     @agent
@@ -34,7 +35,8 @@ class LocalProcessingCrew():
         return Agent(
             config=self.agents_config['backend_agent'],
             tools=[BuildTool(), SerperDevTool(), FileReadTool(), FileWriterTool(), DirectoryReadTool()],
-            verbose=True
+            verbose=True,
+            cache=False
         )
     
     @task
@@ -59,6 +61,7 @@ class LocalProcessingCrew():
             tasks=self.tasks,
             process=Process.sequential,
             verbose=False,
+            cache=False,
         )
 
     # Project type detection
