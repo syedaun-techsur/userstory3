@@ -23,13 +23,13 @@ frontend_task:
          * Use file_writer_tool to write the updated package.json back
          * Remove package-lock.json if it exists using build_tool: rm package-lock.json
          * Run: npm cache clean --force using build_tool
-         * Run: npm install --force using build_tool
+         * Run: npm install --force --legacy-peer-deps --no-package-lock using build_tool
          * Run: npm run build using build_tool
          * If build fails, analyze the error and fix it:
            - For dependency errors: Use web search to find compatible versions and solutions
            - For other errors: Use web search to find solutions
            - Apply fixes using file_writer_tool
-           - Re-run rm package-lock.json, npm cache clean --force, npm install --force, and npm run build
+           - Re-run rm package-lock.json, npm cache clean --force, npm install --force --legacy-peer-deps --no-package-lock, and npm run build
          * Continue fixing and re-building until success or max attempts reached
     4. Report final status: success (all builds passed) or failure (could not fix all issues)
     
@@ -41,9 +41,9 @@ frontend_task:
     - Use build_tool to run npm commands
     - ALWAYS use web search to find compatible package versions and error solutions
     - Only work with files that are in the refined_files context
-    - For frontend projects, run rm package-lock.json, npm cache clean --force, npm install --force, and npm run build (skip npm test)
+    - For frontend projects, run rm package-lock.json, npm cache clean --force, npm install --force --legacy-peer-deps --no-package-lock, and npm run build (skip npm test)
     - Always check for build script existence and add dummy script if missing
-    - Use --force flag to handle dependency conflicts and force reinstallation
+    - Use --force --legacy-peer-deps --no-package-lock flags to handle dependency conflicts and force reinstallation
     - This task MUST complete successfully for the backend task to proceed
     
     Return a detailed report of the frontend build process and final status.

@@ -10,7 +10,7 @@ frontend_agent:
     - Using web search to find compatible package versions and solutions
   goal: >
     Successfully build frontend projects by removing package-lock.json, running npm cache clean --force, 
-    npm install --force, and npm run build, then fix any errors that occur during the build process.
+    npm install --force --legacy-peer-deps --no-package-lock, and npm run build, then fix any errors that occur during the build process.
     Use web search to find compatible package versions and apply intelligent fixes.
   backstory: >
     You have extensive experience with React, Node.js, and the npm ecosystem.
@@ -18,6 +18,8 @@ frontend_agent:
     in frontend projects. You excel at using web search to find the latest compatible
     package versions and implementing fixes for common React/npm build problems.
     You always verify package compatibility through web search before making changes.
+  max_iter: 50
+  max_retry_limit: 50
 
 backend_agent:
   name: Backend Build and Fix Specialist
