@@ -194,16 +194,140 @@ class LocalProcessingCrew():
                 print(f"[LocalRepo] ✓ Applied LLM changes to {file_path}")
                 
             context["workspace_path"] = workspace_dir
-            self.crew().kickoff(context)
+            crew_result = self.crew().kickoff(context)
             
+            # Create PR with the processed changes
+            self.create_pr_with_changes(repo_name, pr_number, refined_files)
+            
+            return crew_result
 
-            
-    
         
         except Exception as e:
             error_msg = f"Error in local processing: {str(e)}"
             print(f"LocalProcessingCrew: {error_msg}")
             return {"status": "error", "message": error_msg}
+
+    def create_pr_with_changes(self, repo_name: str, pr_number: int, refined_files: Dict):
+        """Create a new branch and PR with the processed changes"""
+        print("\n=== Starting PR Creation Process ===")
+        print(f"GITHUB_TOKEN present: {'GITHUB_TOKEN' in os.environ}")
+        
+        if not refined_files:
+            print("❌ No refined files to create PR with")
+            return
+        
+        print(f"Found {len(refined_files)} files to process")
+        
+        try:
+            # Initialize GitHub client
+            print("\n1. Initializing GitHub client...")
+            github_client = Github(os.getenv("GITHUB_TOKEN"))
+            repo = github_client.get_repo(repo_name)
+            
+            # Get original PR to determine base branch
+            print("\n2. Getting PR information...")
+            pr = repo.get_pull(pr_number)
+            base_branch = pr.head.ref
+            target_branch = f"ai_refined_code_{base_branch}"
+            
+            # Create or get target branch
+            print("\n3. Setting up target branch...")
+            try:
+                repo.get_branch(target_branch)
+                print(f"✓ Branch {target_branch} already exists")
+            except:
+                try:
+                    base_ref = repo.get_branch(base_branch)
+                    repo.create_git_ref(ref=f"refs/heads/{target_branch}", sha=base_ref.commit.sha)
+                    print(f"✓ Created new branch {target_branch}")
+                except Exception as e:
+                    print(f"❌ Error creating branch {target_branch}: {str(e)}")
+                    return
+            
+            # Track file statistics
+            successful_updates = 0
+            skipped_files = 0
+            failed_files = 0
+            
+            # Process each refined file
+            for fname, data in refined_files.items():
+                old_code = data.get('old_code', '')
+                updated_code = data.get('updated_code', '')
+                changes = data.get('changes', '').strip()
+                
+                # Skip if no real changes
+                if old_code == updated_code:
+                    print(f"⚠️ Skipping {fname}: No changes detected")
+                    skipped_files += 1
+                    continue
+                
+                try:
+                    commit_message = f"AI Refactor for {fname}:\n\nChanges:\n{changes}"
+                    
+                    # Update or create file
+                    try:
+                        existing_file = repo.get_contents(fname, ref=target_branch)
+                        print(f"✓ Updating existing file: {fname}")
+                        repo.update_file(
+                            path=fname,
+                            message=commit_message,
+                            content=updated_code,
+                            sha=existing_file.sha,
+                            branch=target_branch
+                        )
+                    except:
+                        print(f"✓ Creating new file: {fname}")
+                        repo.create_file(
+                            path=fname,
+                            message=commit_message,
+                            content=updated_code,
+                            branch=target_branch
+                        )
+                    successful_updates += 1
+
+                except Exception as e:
+                    print(f"❌ Error processing {fname}: {str(e)}")
+                    failed_files += 1
+            
+            # Create PR if there were successful updates
+            if successful_updates > 0:
+                print("\n6. Creating Pull Request...")
+                # Check for existing PR
+                print("Checking for existing PR...")
+                existing_pr = None
+                for pr_item in repo.get_pulls(state="open", head=f"{repo.owner.login}:{target_branch}"):
+                    existing_pr = pr_item
+                    break
+                
+                if not existing_pr:
+                    print("No existing PR found, creating new one...")
+                    pr_title = f"AI Refactored Code Update (PR #{pr_number})"
+                    pr_body = f"""This PR includes updated code based on coding standards with inline changes described.
+
+**Source PR:** #{pr_number}
+**Files Updated:** {successful_updates}
+**Files Skipped:** {skipped_files}
+**Files Failed:** {failed_files}
+
+This PR was automatically generated by AI code refinement."""
+                    
+                    new_pr = repo.create_pull(
+                        title=pr_title,
+                        body=pr_body,
+                        head=target_branch,
+                        base=base_branch
+                    )
+                    print(f"✓ Created PR #{new_pr.number}: {new_pr.title}")
+                else:
+                    print(f"✓ PR already exists: #{existing_pr.number} - {existing_pr.title}")
+            else:
+                print("\n❌ No files were successfully updated, skipping PR creation")
+                
+        except Exception as e:
+            print(f"\n❌ Error in PR creation process: {str(e)}")
+            print("Full error details:")
+            import traceback
+            traceback.print_exc()
 
         
         
